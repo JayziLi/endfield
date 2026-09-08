@@ -1,0 +1,57 @@
+[input]
+mode = udp_jpeg
+
+[ui]
+language = zh
+
+[udp]
+host = 0.0.0.0
+port = 4455
+width = 320
+height = 320
+timeout_seconds = 2.0
+socket_buffer_bytes = 1048576
+fifo_packets = 512
+
+[obs]
+host = 127.0.0.1
+port = 4455
+password =
+source_name =
+width = 320
+height = 320
+jpeg_quality = 55
+timeout_seconds = 2.0
+
+[model]
+path = models/model.onnx
+provider = tensorrt
+cuda_graph = True
+gpu_preprocess = True
+output_format = yolov5
+output_layout = auto
+confidence = 0.375
+iou = 0.5
+
+[kmbox]
+enabled = False
+host = 192.168.2.100
+port = 8808
+uuid =
+monitor_port = 5002
+encrypted = True
+timeout_seconds = 0.02
+connect_attempts = 10
+
+[aim]
+enabled = False
+trigger = right
+target_class = 0
+target_y_ratio = 0.4
+kp_min = 0.1
+kp_max = 0.164
+kp_growth = 0.167
+smoothing = 0.35
+deadzone = 1.5
+max_step = 30
+fov_radius = 150.0

@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from .config import load_config
+from .pipeline import benchmark_model, check_connections, run_pipeline
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Low-latency OBS YOLO inference with KMBox control")
+    parser.add_argument("--config", type=Path, default=Path("settings.txt"))
+    parser.add_argument("--stop-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--preview-port", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--preview-enable-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--runtime-aim-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--benchmark-output", type=Path, help="write the benchmark JSON report to this path")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--gui", action="store_true", help="open the graphical control panel")
+    mode.add_argument("--check", action="store_true", help="check OBS and KMBox connections")
+    mode.add_argument("--benchmark", type=_positive_int, metavar="N", help="benchmark the model for N iterations")
+    mode.add_argument(
+        "--pipeline-benchmark",
+        type=_positive_int,
+        metavar="N",
+        help="benchmark the live input-to-target pipeline for N frames",
+    )
+    args = parser.parse_args()
+
+    config = None
+    try:
+        if args.gui:
+            from .gui import run_gui
+
+            run_gui(args.config, auto_start=args.autostart)
+            return
+        config = load_config(args.config)
+        if args.check:
+            check_connections(config, args.stop_file)
+        elif args.benchmark is not None:
+            benchmark_model(config, args.benchmark, args.stop_file)
+        elif args.pipeline_benchmark is not None:
+            from .pipeline_benchmark import run_pipeline_benchmark
+
+            run_pipeline_benchmark(
+                config,
+                args.pipeline_benchmark,
+                stop_file=args.stop_file,
+                output_path=args.benchmark_output,
+            )
+        else:
+            run_pipeline(
+                config,
+                stop_file=args.stop_file,
+                preview_port=args.preview_port,
+                preview_enable_file=args.preview_enable_file,
+                runtime_aim_file=args.runtime_aim_file,
+            )
+    except Exception as exc:
+        if args.gui:
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+
+                root = tk.Tk()
+                root.withdraw()
+                messagebox.showerror("Endfield 无法启动", str(exc), parent=root)
+                root.destroy()
+            except Exception:
+                pass
+        prefix = "错误" if config is None or config.ui.language == "zh" else "Error"
+        print(f"{prefix}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    main()

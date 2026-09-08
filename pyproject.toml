@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "endfield"
+version = "0.1.0"
+description = "Low-latency OBS and UDP YOLO inference with optional KMBox Net control"
+requires-python = ">=3.11"
+dependencies = [
+  "av>=14,<16",
+  "kmbox-universal>=0.1.0",
+  "numpy>=1.26,<3",
+  "onnx>=1.17,<2",
+  "onnxruntime-gpu[cuda,cudnn]==1.26.0",
+  "opencv-python-headless>=4.10,<5",
+  "pillow>=11,<13",
+  "tensorrt-cu12==10.9.0.34",
+  "tomli-w>=1.2,<2",
+  "websocket-client>=1.8,<2",
+]
+
+[project.scripts]
+endfield = "rhodes_fast.__main__:main"
+endfield-gui = "rhodes_fast.gui:main"
+
+[tool.setuptools]
+packages = ["rhodes_fast"]
