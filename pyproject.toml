@@ -1,28 +1,55 @@
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "endfield"
-version = "0.1.0"
-description = "Low-latency OBS and UDP YOLO inference with optional KMBox Net control"
-requires-python = ">=3.11"
+version = "0.2.0"
+description = "Low-latency secondary-PC YOLO inference with tunable motion control"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   "av>=14,<16",
   "kmbox-universal>=0.1.0",
   "numpy>=1.26,<3",
-  "onnx>=1.17,<2",
-  "onnxruntime-gpu[cuda,cudnn]==1.26.0",
   "opencv-python-headless>=4.10,<5",
   "pillow>=11,<13",
-  "tensorrt-cu12==10.9.0.34",
   "tomli-w>=1.2,<2",
   "websocket-client>=1.8,<2",
 ]
 
+[project.optional-dependencies]
+cpu = [
+  "onnxruntime==1.26.0",
+]
+nvidia = [
+  "onnx>=1.17,<2",
+  "onnxruntime-gpu[cuda,cudnn]==1.26.0",
+  "tensorrt-cu12==10.9.0.34",
+]
+dev = [
+  "build>=1.2,<2",
+  "onnx>=1.17,<2",
+  "pyside6-essentials>=6.8,<7",
+]
+gallery = [
+  "pyside6-essentials>=6.8,<7",
+]
+
+[project.urls]
+Homepage = "https://github.com/JayziLi/endfield"
+Documentation = "https://github.com/JayziLi/endfield#readme"
+Issues = "https://github.com/JayziLi/endfield/issues"
+
 [project.scripts]
 endfield = "rhodes_fast.__main__:main"
 endfield-gui = "rhodes_fast.gui:main"
+endfield-ui-gallery = "rhodes_fast.ui.gallery:main"
 
-[tool.setuptools]
-packages = ["rhodes_fast"]
+[tool.setuptools.packages.find]
+include = ["rhodes_fast*"]
+
+[tool.setuptools.package-data]
+"rhodes_fast.ui" = ["assets/*.jpg"]

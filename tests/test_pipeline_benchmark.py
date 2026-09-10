@@ -13,6 +13,7 @@ import numpy as np
 
 from rhodes_fast.config import (
     AimConfig,
+    AimProfileConfig,
     AppConfig,
     InputConfig,
     KmboxConfig,
@@ -59,7 +60,8 @@ class PipelineBenchmarkTests(unittest.TestCase):
                 obs=ObsConfig(host="127.0.0.1"),
                 model=ModelConfig(path=model, provider="cpu", cuda_graph=False, gpu_preprocess=False),
                 kmbox=KmboxConfig(enabled=True),
-                aim=AimConfig(target_class=2),
+                aim=AimConfig(),
+                aim_profile_1=AimProfileConfig(target_class=2),
             )
             source = _FakeSource()
             detector = _FakeDetector()

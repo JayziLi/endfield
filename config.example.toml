@@ -1,5 +1,5 @@
 [input]
-mode = "udp_jpeg"
+mode = "udp_video"
 
 [ui]
 language = "zh"
@@ -24,8 +24,8 @@ jpeg_quality = 55
 timeout_seconds = 2.0
 
 [model]
-path = "models/model.onnx"
-provider = "tensorrt"
+path = "models/yolov5n.onnx"
+provider = "auto"
 cuda_graph = true
 gpu_preprocess = true
 output_format = "yolov5"
@@ -35,7 +35,7 @@ iou = 0.5
 
 [kmbox]
 enabled = false
-host = "192.168.2.100"
+host = "192.168.1.100"
 port = 8808
 uuid = ""
 monitor_port = 5002
@@ -44,14 +44,29 @@ timeout_seconds = 0.02
 connect_attempts = 10
 
 [aim]
-enabled = false
-trigger = "right"
 target_class = 0
 target_y_ratio = 0.4
+smoothing = 1.0
+deadzone = 2.0
+max_step = 30
+fov_radius = 150.0
+
+[aim_profile_1]
+enabled = true
+trigger = "right"
 kp_min = 0.1
 kp_max = 0.164
 kp_growth = 0.167
-smoothing = 0.35
-deadzone = 1.5
-max_step = 30
-fov_radius = 150
+target_class = 0
+target_y_ratio = 0.4
+fov_radius = 150.0
+
+[aim_profile_2]
+enabled = false
+trigger = "left"
+kp_min = 0.1
+kp_max = 0.164
+kp_growth = 0.167
+target_class = 0
+target_y_ratio = 0.4
+fov_radius = 150.0

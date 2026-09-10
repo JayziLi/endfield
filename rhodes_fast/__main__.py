@@ -4,8 +4,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import load_config
-from .pipeline import benchmark_model, check_connections, run_pipeline
+from .config import default_config, load_config, save_config
+from .model_download import ensure_default_model
+from .pipeline import (
+    benchmark_model,
+    check_connections,
+    compare_latency_logs,
+    run_pipeline,
+)
 
 
 def _positive_int(value: str) -> int:
@@ -24,10 +30,27 @@ def main() -> None:
     parser.add_argument("--runtime-aim-file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--benchmark-output", type=Path, help="write the benchmark JSON report to this path")
+    parser.add_argument(
+        "--latency-log",
+        type=Path,
+        help="record aim-loop latency samples for every frame to this CSV",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--gui", action="store_true", help="open the graphical control panel")
+    mode.add_argument(
+        "--download-model",
+        action="store_true",
+        help="download and verify the default YOLOv5n model, then exit",
+    )
     mode.add_argument("--check", action="store_true", help="check OBS and KMBox connections")
     mode.add_argument("--benchmark", type=_positive_int, metavar="N", help="benchmark the model for N iterations")
+    mode.add_argument(
+        "--analyze",
+        type=Path,
+        nargs="+",
+        metavar="CSV",
+        help="compare recorded latency logs and report the loop delay of each",
+    )
     mode.add_argument(
         "--pipeline-benchmark",
         type=_positive_int,
@@ -38,6 +61,19 @@ def main() -> None:
 
     config = None
     try:
+        if not args.config.is_file() and args.config == Path("settings.txt"):
+            save_config(default_config(), args.config)
+            print(f"Created default settings: {args.config.resolve()}")
+        bootstrap_config = load_config(args.config, validate_model=False)
+        model_path = ensure_default_model(args.config, bootstrap_config.model.path)
+        if args.download_model:
+            if not model_path.is_file():
+                raise FileNotFoundError(
+                    f"Custom ONNX model not found: {model_path}. "
+                    "Automatic download only applies to models/yolov5n.onnx."
+                )
+            print(f"Model ready: {model_path}")
+            return
         if args.gui:
             from .gui import run_gui
 
@@ -48,6 +84,8 @@ def main() -> None:
             check_connections(config, args.stop_file)
         elif args.benchmark is not None:
             benchmark_model(config, args.benchmark, args.stop_file)
+        elif args.analyze:
+            print(compare_latency_logs(config, args.analyze))
         elif args.pipeline_benchmark is not None:
             from .pipeline_benchmark import run_pipeline_benchmark
 
@@ -64,6 +102,7 @@ def main() -> None:
                 preview_port=args.preview_port,
                 preview_enable_file=args.preview_enable_file,
                 runtime_aim_file=args.runtime_aim_file,
+                latency_log=args.latency_log,
             )
     except Exception as exc:
         if args.gui:

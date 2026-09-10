@@ -118,9 +118,11 @@ class YoloDetector:
         if self.gpu_preprocess_enabled:
             if model_input.type != "tensor(uint8)" or model_input.shape[3] != 3:
                 raise ValueError(f"Expected a uint8 NHWC input, got {model_input.shape} {model_input.type}")
+            self.input_dtype = np.uint8
             self.input_height = int(model_input.shape[1])
             self.input_width = int(model_input.shape[2])
         else:
+            self.input_dtype = _numpy_tensor_dtype(model_input.type)
             self.input_height = int(model_input.shape[2])
             self.input_width = int(model_input.shape[3])
         try:
@@ -139,6 +141,7 @@ class YoloDetector:
         model_output = self.session.get_outputs()[self.output_index]
         input_types = {
             "tensor(float)": np.float32,
+            "tensor(float16)": np.float16,
             "tensor(uint8)": np.uint8,
         }
         input_type = input_types.get(model_input.type)
@@ -194,7 +197,7 @@ class YoloDetector:
         if self.gpu_preprocess_enabled:
             blank = np.zeros((1, self.input_height, self.input_width, 3), dtype=np.uint8)
         else:
-            blank = np.zeros((1, 3, self.input_height, self.input_width), dtype=np.float32)
+            blank = np.zeros((1, 3, self.input_height, self.input_width), dtype=self.input_dtype)
         for _ in range(count):
             self._run_model(blank)
         self._assert_active_provider()
@@ -212,13 +215,7 @@ class YoloDetector:
                 )
             blob = np.ascontiguousarray(model_frame)[None]
         else:
-            blob = cv2.dnn.blobFromImage(
-                frame,
-                scalefactor=1.0 / 255.0,
-                size=(self.input_width, self.input_height),
-                swapRB=True,
-                crop=False,
-            )
+            blob = _prepare_model_blob(frame, self.input_width, self.input_height, self.input_dtype)
         self.last_preprocess_ms = (time.perf_counter() - detection_started) * 1000.0
         started = time.perf_counter()
         output = self._run_model(blob)
@@ -268,6 +265,33 @@ def _select_provider(preference: str) -> str:
     if provider not in available:
         raise RuntimeError(f"Requested {provider}, available providers: {sorted(available)}")
     return provider
+
+
+def _numpy_tensor_dtype(tensor_type: str) -> type[np.floating]:
+    choices = {
+        "tensor(float)": np.float32,
+        "tensor(float16)": np.float16,
+    }
+    dtype = choices.get(tensor_type)
+    if dtype is None:
+        raise ValueError(f"Unsupported YOLO input type: {tensor_type}")
+    return dtype
+
+
+def _prepare_model_blob(
+    frame: np.ndarray,
+    input_width: int,
+    input_height: int,
+    input_dtype: type[np.floating],
+) -> np.ndarray:
+    blob = cv2.dnn.blobFromImage(
+        frame,
+        scalefactor=1.0 / 255.0,
+        size=(input_width, input_height),
+        swapRB=True,
+        crop=False,
+    )
+    return blob.astype(input_dtype, copy=False)
 
 
 def _provider_chain(provider: str, *, cuda_graph: bool = False) -> list:

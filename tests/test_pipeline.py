@@ -5,10 +5,112 @@ import unittest
 import numpy as np
 
 from rhodes_fast.detector import Detection, decode_yolo
-from rhodes_fast.pipeline import select_target
+from rhodes_fast.pipeline import TargetSelector, select_target
 
 
 class TargetSelectionTests(unittest.TestCase):
+    def test_small_distance_changes_do_not_switch_the_locked_target(self) -> None:
+        selector = TargetSelector()
+        selected_centers: list[float] = []
+
+        for frame in range(8):
+            if frame % 2 == 0:
+                left = Detection(120, 150, 140, 170, 0.9, 0)
+                right = Detection(181, 150, 201, 170, 0.9, 0)
+            else:
+                left = Detection(119, 150, 139, 170, 0.9, 0)
+                right = Detection(180, 150, 200, 170, 0.9, 0)
+            selected = selector.select(
+                [left, right],
+                frame_width=320,
+                frame_height=320,
+                target_y_ratio=0.5,
+                fov_radius=100,
+                target_class=0,
+            )
+            self.assertIsNotNone(selected)
+            selected_centers.append(selected.center_x)
+
+        self.assertTrue(all(center < 160 for center in selected_centers))
+
+    def test_new_target_must_stay_better_before_lock_switches(self) -> None:
+        selector = TargetSelector()
+        current = Detection(110, 150, 130, 170, 0.9, 0)
+        farther = Detection(230, 150, 250, 170, 0.9, 0)
+        selected = selector.select(
+            [current, farther],
+            frame_width=320,
+            frame_height=320,
+            target_y_ratio=0.5,
+            fov_radius=100,
+            target_class=0,
+        )
+        selected_centers = [selected.center_x]
+
+        better = Detection(160, 150, 180, 170, 0.9, 0)
+        for _ in range(3):
+            selected = selector.select(
+                [current, better],
+                frame_width=320,
+                frame_height=320,
+                target_y_ratio=0.5,
+                fov_radius=100,
+                target_class=0,
+            )
+            selected_centers.append(selected.center_x)
+
+        self.assertEqual(selected_centers, [120, 120, 120, 170])
+
+    def test_replacement_after_locked_target_disappears_is_reported_as_changed(self) -> None:
+        selector = TargetSelector()
+        locked = Detection(110, 150, 130, 170, 0.9, 0)
+        replacement = Detection(150, 150, 170, 170, 0.9, 0)
+        selector.select(
+            [locked],
+            frame_width=320,
+            frame_height=320,
+            target_y_ratio=0.5,
+            fov_radius=100,
+            target_class=0,
+        )
+
+        selected = selector.select(
+            [replacement],
+            frame_width=320,
+            frame_height=320,
+            target_y_ratio=0.5,
+            fov_radius=100,
+            target_class=0,
+        )
+
+        self.assertEqual(selected, replacement)
+        self.assertTrue(selector.changed)
+
+    def test_runtime_target_setting_change_restarts_the_lock(self) -> None:
+        selector = TargetSelector()
+        first = Detection(140, 120, 180, 200, 0.9, 0)
+        selector.select(
+            [first],
+            frame_width=320,
+            frame_height=320,
+            target_y_ratio=0.25,
+            fov_radius=100,
+            target_class=0,
+        )
+        replacement = Detection(140, 120, 180, 200, 0.9, 1)
+
+        selected = selector.select(
+            [replacement],
+            frame_width=320,
+            frame_height=320,
+            target_y_ratio=0.75,
+            fov_radius=100,
+            target_class=1,
+        )
+
+        self.assertEqual(selected, replacement)
+        self.assertTrue(selector.changed)
+
     def test_only_selected_class_can_be_targeted(self) -> None:
         nearest_wrong_class = Detection(150, 150, 170, 170, 0.95, 1)
         farther_selected_class = Detection(180, 150, 200, 170, 0.90, 2)

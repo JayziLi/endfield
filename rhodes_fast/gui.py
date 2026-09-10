@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
@@ -24,7 +25,7 @@ INPUT_MODES = {
     "UDP 单包 JPEG": "udp_jpeg",
     "OBS WebSocket": "obs_websocket",
 }
-PROVIDERS = {"TensorRT FP16": "tensorrt", "CUDA": "cuda", "CPU": "cpu"}
+PROVIDERS = {"自动（推荐）": "auto", "TensorRT FP16": "tensorrt", "CUDA": "cuda", "CPU": "cpu"}
 OUTPUT_FORMATS = {"YOLOv5": "yolov5", "YOLOv8": "yolov8", "端到端 NMS": "end2end"}
 TRIGGERS = {
     "鼠标侧键 1": "side1",
@@ -37,6 +38,34 @@ LOG_LANGUAGES = {"中文": "zh", "English": "en"}
 
 def _display_value(mapping: dict[str, str], stored: str) -> str:
     return next((label for label, value in mapping.items() if value == stored), next(iter(mapping)))
+
+
+def _display_path(path: Path, base_directory: Path) -> str:
+    try:
+        return path.resolve().relative_to(base_directory.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+# 预览取帧的节拍。管线按 30fps 发, 这里 16 毫秒取一次(约 60Hz), 每一帧都能赶上
+# 自己那一拍。取帧慢于发帧的话画面步长会忽长忽短, 看着就是一顿一顿的。
+PREVIEW_POLL_MS = 16
+# 没在看预览时没必要 60Hz 空转, 但定时器链不能断。
+PREVIEW_IDLE_POLL_MS = 200
+
+
+def fit_preview_to_canvas(frame: np.ndarray, canvas_width: int, canvas_height: int) -> np.ndarray:
+    """等比缩放到画布内并转成 RGB。
+
+    缩放用 cv2 而不是 PIL: 实测 320->400 的双线性放大, PIL 要 1.38 毫秒, cv2 只要
+    0.26 毫秒。这段跑在 Tk 主线程上, 而 Tk 和瞄准管线共用同一台机器。
+    """
+    height, width = frame.shape[:2]
+    scale = min(canvas_width / width, canvas_height / height)
+    target = (max(1, round(width * scale)), max(1, round(height * scale)))
+    if target != (width, height):
+        frame = cv2.resize(frame, target, interpolation=cv2.INTER_LINEAR)
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
 
 class RhodesFastGui:
@@ -65,6 +94,7 @@ class RhodesFastGui:
         if self.config.model.path.is_file():
             self.root.after(120, lambda: self._inspect_selected_model(self.config.model.path))
         self.root.after(80, self._drain_messages)
+        self.root.after(PREVIEW_POLL_MS, self._drain_preview)
 
     def run(self) -> None:
         self.root.mainloop()
@@ -85,7 +115,7 @@ class RhodesFastGui:
 
     def _create_variables(self) -> None:
         cfg = self.config
-        self.model_path = tk.StringVar(value=str(cfg.model.path))
+        self.model_path = tk.StringVar(value=_display_path(cfg.model.path, self.config_path.parent))
         self.provider = tk.StringVar(value=_display_value(PROVIDERS, cfg.model.provider))
         self.cuda_graph = tk.BooleanVar(value=cfg.model.cuda_graph)
         self.gpu_preprocess = tk.BooleanVar(value=cfg.model.gpu_preprocess)
@@ -105,22 +135,32 @@ class RhodesFastGui:
         self.obs_password = tk.StringVar(value=cfg.obs.password)
         self.obs_source = tk.StringVar(value=cfg.obs.source_name)
         self.kmbox_enabled = tk.BooleanVar(value=cfg.kmbox.enabled)
+        self.latency_log_enabled = tk.BooleanVar(value=False)
         self.kmbox_host = tk.StringVar(value=cfg.kmbox.host)
         self.kmbox_port = tk.StringVar(value=str(cfg.kmbox.port))
         self.kmbox_uuid = tk.StringVar(value=cfg.kmbox.uuid)
-        self.aim_enabled = tk.BooleanVar(value=cfg.aim.enabled)
-        self.trigger = tk.StringVar(value=_display_value(TRIGGERS, cfg.aim.trigger))
-        self.target_class = tk.StringVar(value=str(cfg.aim.target_class))
-        self.kp_min = tk.DoubleVar(value=cfg.aim.kp_min)
-        self.kp_min_text = tk.StringVar(value=f"{cfg.aim.kp_min:.3f}")
-        self.kp_max = tk.DoubleVar(value=cfg.aim.kp_max)
-        self.kp_max_text = tk.StringVar(value=f"{cfg.aim.kp_max:.3f}")
-        self.kp_growth = tk.DoubleVar(value=cfg.aim.kp_growth)
-        self.kp_growth_text = tk.StringVar(value=f"{cfg.aim.kp_growth:.3f}")
-        self.aim_position = tk.DoubleVar(value=cfg.aim.target_y_ratio * 100.0)
-        self.aim_position_text = tk.StringVar(value=f"{cfg.aim.target_y_ratio * 100.0:.0f}%")
-        self.fov = tk.DoubleVar(value=cfg.aim.fov_radius)
-        self.fov_text = tk.StringVar(value=f"{cfg.aim.fov_radius:.0f}")
+        self.profile_enabled = [tk.BooleanVar(value=profile.enabled) for profile in cfg.aim_profiles]
+        self.profile_trigger = [
+            tk.StringVar(value=_display_value(TRIGGERS, profile.trigger)) for profile in cfg.aim_profiles
+        ]
+        self.profile_target_class = [tk.StringVar(value=str(profile.target_class)) for profile in cfg.aim_profiles]
+        self.profile_aim_position = [
+            tk.DoubleVar(value=profile.target_y_ratio * 100.0) for profile in cfg.aim_profiles
+        ]
+        self.profile_aim_position_text = [
+            tk.StringVar(value=f"{profile.target_y_ratio * 100.0:.0f}%") for profile in cfg.aim_profiles
+        ]
+        self.profile_fov = [tk.DoubleVar(value=profile.fov_radius) for profile in cfg.aim_profiles]
+        self.profile_fov_text = [tk.StringVar(value=f"{profile.fov_radius:.0f}") for profile in cfg.aim_profiles]
+        self.profile_kp_min = [tk.DoubleVar(value=profile.kp_min) for profile in cfg.aim_profiles]
+        self.profile_kp_min_text = [tk.StringVar(value=f"{profile.kp_min:.3f}") for profile in cfg.aim_profiles]
+        self.profile_kp_max = [tk.DoubleVar(value=profile.kp_max) for profile in cfg.aim_profiles]
+        self.profile_kp_max_text = [tk.StringVar(value=f"{profile.kp_max:.3f}") for profile in cfg.aim_profiles]
+        self.profile_kp_growth = [tk.DoubleVar(value=profile.kp_growth) for profile in cfg.aim_profiles]
+        self.profile_kp_growth_text = [
+            tk.StringVar(value=f"{profile.kp_growth:.3f}") for profile in cfg.aim_profiles
+        ]
+        self._last_profile_triggers = [variable.get() for variable in self.profile_trigger]
         self.status = tk.StringVar(value="已就绪")
 
     def _build_ui(self) -> None:
@@ -245,8 +285,8 @@ class RhodesFastGui:
         detection = ttk.LabelFrame(advanced_tab, text="模型输出", padding=12)
         advanced_tab.columnconfigure(0, weight=1, uniform="advanced")
         advanced_tab.columnconfigure(1, weight=1, uniform="advanced")
-        advanced_tab.rowconfigure(0, weight=1)
-        detection.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        advanced_tab.rowconfigure(1, weight=1)
+        detection.grid(row=0, column=0, columnspan=2, sticky="ew")
         detection.columnconfigure(1, weight=1)
         format_combo = self._combo_row(detection, 0, "输出格式", self.output_format, OUTPUT_FORMATS)
         format_combo.bind("<<ComboboxSelected>>", self._output_format_changed)
@@ -256,37 +296,92 @@ class RhodesFastGui:
         self._slider_row(detection, 2, "NMS IoU", self.iou, self.iou_text, 0.05, 0.95, self._iou_changed)
         self._combo_row(detection, 3, "运行信息语言", self.log_language, LOG_LANGUAGES)
 
-        aim = ttk.LabelFrame(advanced_tab, text="控制参数", padding=12)
-        aim.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        aim.columnconfigure(1, weight=1)
-        ttk.Checkbutton(aim, text="启用目标控制", variable=self.aim_enabled).grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 5)
-        )
-        ttk.Label(aim, text="目标标签").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=6)
-        initial_classes = [str(value) for value in range(max(7, self.config.aim.target_class + 1))]
-        self.target_class_combo = ttk.Combobox(
-            aim, textvariable=self.target_class, values=initial_classes, state="readonly", width=20
-        )
-        self.target_class_combo.grid(row=1, column=1, sticky="w", pady=4)
-        self.target_class_combo.bind("<<ComboboxSelected>>", self._target_class_changed)
-        trigger_combo = self._combo_row(aim, 2, "触发方式", self.trigger, TRIGGERS)
-        trigger_combo.bind("<<ComboboxSelected>>", self._trigger_changed)
-        self._slider_row(aim, 3, "P 最小值", self.kp_min, self.kp_min_text, 0.0, 0.3, self._kp_min_changed)
-        self._slider_row(aim, 4, "P 最大值", self.kp_max, self.kp_max_text, 0.0, 0.3, self._kp_max_changed)
-        self._slider_row(
-            aim, 5, "P 增长斜率", self.kp_growth, self.kp_growth_text, 0.0, 0.5, self._kp_growth_changed
-        )
-        self._slider_row(
-            aim,
-            6,
-            "框内位置（顶部 0%）",
-            self.aim_position,
-            self.aim_position_text,
-            0,
-            100,
-            self._aim_position_changed,
-        )
-        self._slider_row(aim, 7, "视野半径", self.fov, self.fov_text, 10, 320, self._fov_changed)
+        profiles = ttk.Frame(advanced_tab)
+        profiles.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        profiles.columnconfigure(0, weight=1, uniform="profile")
+        profiles.columnconfigure(1, weight=1, uniform="profile")
+        highest_target_class = max(profile.target_class for profile in self.config.aim_profiles)
+        initial_classes = [str(value) for value in range(max(7, highest_target_class + 1))]
+        self.target_class_combos: list[ttk.Combobox] = []
+        for index in range(2):
+            panel = ttk.LabelFrame(profiles, text=f"控制方案 {index + 1}", padding=12)
+            panel.grid(row=0, column=index, sticky="nsew", padx=(0, 5) if index == 0 else (5, 0))
+            panel.columnconfigure(1, weight=1)
+            ttk.Checkbutton(
+                panel,
+                text="启用此方案",
+                variable=self.profile_enabled[index],
+                command=lambda profile=index: self._profile_enabled_changed(profile),
+            ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+            trigger_combo = self._combo_row(panel, 1, "触发方式", self.profile_trigger[index], TRIGGERS)
+            trigger_combo.bind(
+                "<<ComboboxSelected>>",
+                lambda _event, profile=index: self._profile_trigger_changed(profile),
+            )
+            ttk.Label(panel, text="目标标签").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=6)
+            target_class_combo = ttk.Combobox(
+                panel,
+                textvariable=self.profile_target_class[index],
+                values=initial_classes,
+                state="readonly",
+                width=20,
+            )
+            target_class_combo.grid(row=2, column=1, sticky="w", pady=4)
+            target_class_combo.bind(
+                "<<ComboboxSelected>>",
+                lambda _event, profile=index: self._target_class_changed(profile),
+            )
+            self.target_class_combos.append(target_class_combo)
+            self._slider_row(
+                panel,
+                3,
+                "框内位置（顶部 0%）",
+                self.profile_aim_position[index],
+                self.profile_aim_position_text[index],
+                0,
+                100,
+                lambda value, profile=index: self._aim_position_changed(profile, value),
+            )
+            self._slider_row(
+                panel,
+                4,
+                "视野半径",
+                self.profile_fov[index],
+                self.profile_fov_text[index],
+                10,
+                320,
+                lambda value, profile=index: self._fov_changed(profile, value),
+            )
+            self._slider_row(
+                panel,
+                5,
+                "P 最小值",
+                self.profile_kp_min[index],
+                self.profile_kp_min_text[index],
+                0.0,
+                0.3,
+                lambda value, profile=index: self._kp_min_changed(profile, value),
+            )
+            self._slider_row(
+                panel,
+                6,
+                "P 最大值",
+                self.profile_kp_max[index],
+                self.profile_kp_max_text[index],
+                0.0,
+                0.3,
+                lambda value, profile=index: self._kp_max_changed(profile, value),
+            )
+            self._slider_row(
+                panel,
+                7,
+                "P 增长斜率",
+                self.profile_kp_growth[index],
+                self.profile_kp_growth_text[index],
+                0.0,
+                0.5,
+                lambda value, profile=index: self._kp_growth_changed(profile, value),
+            )
 
         log_box = ttk.LabelFrame(root, text="运行状态", padding=8)
         log_box.pack(fill="both", expand=True, pady=(12, 10))
@@ -304,7 +399,7 @@ class RhodesFastGui:
             pady=8,
         )
         self.log.pack(fill="both", expand=True)
-        self._append_log("准备就绪。请确认画面输入、模型和设备设置。")
+        self._append_log(f"准备就绪。当前输入：{_display_value(INPUT_MODES, self.config.input.mode)}。")
 
         actions = ttk.Frame(root)
         actions.pack(side="bottom", fill="x", before=self.notebook)
@@ -321,6 +416,11 @@ class RhodesFastGui:
             text="管线测速",
             command=lambda: self._launch(["--pipeline-benchmark", "500"], "正在进行管线测速"),
         ).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(
+            actions,
+            text="记录延迟日志",
+            variable=self.latency_log_enabled,
+        ).pack(side="left", padx=(18, 0))
 
     def _entry_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=6)
@@ -454,14 +554,33 @@ class RhodesFastGui:
         )
         aim = replace(
             self.config.aim,
-            enabled=self.aim_enabled.get(),
-            trigger=TRIGGERS[self.trigger.get()],
-            target_class=int(self.target_class.get()),
-            kp_min=self.kp_min.get(),
-            kp_max=self.kp_max.get(),
-            kp_growth=self.kp_growth.get(),
-            target_y_ratio=max(0.0, min(1.0, self.aim_position.get() / 100.0)),
-            fov_radius=self.fov.get(),
+            # Kept in sync with profile 1 so older config consumers and the
+            # pipeline benchmark still see meaningful values.
+            target_class=int(self.profile_target_class[0].get()),
+            target_y_ratio=max(0.0, min(1.0, self.profile_aim_position[0].get() / 100.0)),
+            fov_radius=self.profile_fov[0].get(),
+        )
+        profile_1 = replace(
+            self.config.aim_profile_1,
+            enabled=self.profile_enabled[0].get(),
+            trigger=TRIGGERS[self.profile_trigger[0].get()],
+            kp_min=self.profile_kp_min[0].get(),
+            kp_max=self.profile_kp_max[0].get(),
+            kp_growth=self.profile_kp_growth[0].get(),
+            target_class=int(self.profile_target_class[0].get()),
+            target_y_ratio=max(0.0, min(1.0, self.profile_aim_position[0].get() / 100.0)),
+            fov_radius=self.profile_fov[0].get(),
+        )
+        profile_2 = replace(
+            self.config.aim_profile_2,
+            enabled=self.profile_enabled[1].get(),
+            trigger=TRIGGERS[self.profile_trigger[1].get()],
+            kp_min=self.profile_kp_min[1].get(),
+            kp_max=self.profile_kp_max[1].get(),
+            kp_growth=self.profile_kp_growth[1].get(),
+            target_class=int(self.profile_target_class[1].get()),
+            target_y_ratio=max(0.0, min(1.0, self.profile_aim_position[1].get() / 100.0)),
+            fov_radius=self.profile_fov[1].get(),
         )
         return replace(
             self.config,
@@ -472,6 +591,8 @@ class RhodesFastGui:
             model=model,
             kmbox=kmbox,
             aim=aim,
+            aim_profile_1=profile_1,
+            aim_profile_2=profile_2,
         )
 
     def _save(self, quiet: bool = False) -> bool:
@@ -522,6 +643,11 @@ class RhodesFastGui:
             command.extend(["--preview-enable-file", str(self.preview_enable_file)])
             if self._preview_tab_selected():
                 self.preview_enable_file.touch()
+            if self.latency_log_enabled.get():
+                stamp = time.strftime("%Y%m%d-%H%M%S")
+                latency_log = self.config_path.parent / f"latency-{stamp}.csv"
+                command.extend(["--latency-log", str(latency_log)])
+                self._append_log(f"延迟日志将记录到 {latency_log.name}（每帧都记，停止时给出估计）。")
         command.extend(arguments)
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         environment = os.environ.copy()
@@ -591,15 +717,23 @@ class RhodesFastGui:
                 except queue.Full:
                     pass
 
-    def _drain_messages(self) -> None:
-        preview = None
+    def _drain_preview(self) -> None:
+        """只做预览。和日志分开跑, 是因为两者的节拍差了五倍:
+        日志一秒一行, 80 毫秒够用; 画面一秒 30 帧, 80 毫秒就卡了。"""
+        frame = None
         while True:
             try:
-                preview = self.preview_frames.get_nowait()
+                frame = self.preview_frames.get_nowait()
             except queue.Empty:
                 break
-        if preview is not None:
-            self._display_preview(preview)
+        if frame is not None:
+            self._display_preview(frame)
+        watching = self.preview_socket is not None and self._preview_tab_selected()
+        self.root.after(
+            PREVIEW_POLL_MS if watching else PREVIEW_IDLE_POLL_MS, self._drain_preview
+        )
+
+    def _drain_messages(self) -> None:
         while True:
             try:
                 kind, payload = self.messages.get_nowait()
@@ -635,15 +769,10 @@ class RhodesFastGui:
     def _display_preview(self, frame: np.ndarray) -> None:
         if not self._preview_tab_selected():
             return
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(rgb)
         canvas_width = max(1, self.preview_canvas.winfo_width())
         canvas_height = max(1, self.preview_canvas.winfo_height())
-        scale = min(canvas_width / image.width, canvas_height / image.height)
-        display_size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
-        if display_size != image.size:
-            image = image.resize(display_size, Image.Resampling.BILINEAR)
-        self.preview_photo = ImageTk.PhotoImage(image)
+        fitted = fit_preview_to_canvas(frame, canvas_width, canvas_height)
+        self.preview_photo = ImageTk.PhotoImage(Image.fromarray(fitted))
         self.preview_canvas.delete("preview")
         self.preview_canvas.create_image(
             canvas_width // 2,
@@ -693,23 +822,39 @@ class RhodesFastGui:
         if preview_socket is not None:
             preview_socket.close()
 
-    def _trigger_changed(self, _event=None) -> None:
+    def _profile_enabled_changed(self, profile: int) -> None:
         self._write_runtime_aim_settings()
         if self.process is not None:
-            self._append_log(f"触发键已切换为：{self.trigger.get()}。")
+            state = "启用" if self.profile_enabled[profile].get() else "禁用"
+            self._append_log(f"控制方案 {profile + 1} 已{state}。")
+
+    def _profile_trigger_changed(self, profile: int) -> None:
+        other = 1 - profile
+        if self.profile_trigger[profile].get() == self.profile_trigger[other].get():
+            self.profile_trigger[profile].set(self._last_profile_triggers[profile])
+            messagebox.showwarning(
+                "触发键冲突",
+                "两个控制方案不能使用同一个触发键。",
+                parent=self.root,
+            )
+            return
+        self._last_profile_triggers[profile] = self.profile_trigger[profile].get()
+        self._write_runtime_aim_settings()
+        if self.process is not None:
+            self._append_log(f"控制方案 {profile + 1} 的触发键已切换为：{self.profile_trigger[profile].get()}。")
 
     def _provider_changed(self, _event=None) -> None:
         self._sync_cuda_graph_control()
 
     def _sync_cuda_graph_control(self) -> None:
-        state = "normal" if PROVIDERS[self.provider.get()] == "tensorrt" else "disabled"
+        state = "normal" if PROVIDERS[self.provider.get()] in {"auto", "tensorrt"} else "disabled"
         self.cuda_graph_check.configure(state=state)
         self.gpu_preprocess_check.configure(state=state)
 
-    def _target_class_changed(self, _event=None) -> None:
+    def _target_class_changed(self, profile: int) -> None:
         self._write_runtime_aim_settings()
         if self.process is not None:
-            self._append_log(f"自瞄标签已切换为：{self.target_class.get()}。")
+            self._append_log(f"控制方案 {profile + 1} 的自瞄标签已切换为：{self.profile_target_class[profile].get()}。")
 
     def _output_format_changed(self, _event=None) -> None:
         self._update_target_class_choices()
@@ -718,13 +863,14 @@ class RhodesFastGui:
         count = None
         if self.model_contract is not None:
             count = self.model_contract.class_count_for(OUTPUT_FORMATS[self.output_format.get()])
-        current = int(self.target_class.get())
-        limit = count if count is not None else max(7, current + 1)
-        choices = [str(value) for value in range(limit)]
-        self.target_class_combo.configure(values=choices)
-        if current >= limit:
-            self.target_class.set("0")
-            self._write_runtime_aim_settings()
+        for index, combo in enumerate(self.target_class_combos):
+            current = int(self.profile_target_class[index].get())
+            limit = count if count is not None else max(7, current + 1)
+            choices = [str(value) for value in range(limit)]
+            combo.configure(values=choices)
+            if current >= limit:
+                self.profile_target_class[index].set("0")
+                self._write_runtime_aim_settings()
 
     def _confidence_changed(self, value: str) -> None:
         rounded = round(float(value), 3)
@@ -736,53 +882,64 @@ class RhodesFastGui:
         self.iou.set(rounded)
         self.iou_text.set(f"{rounded:.3f}")
 
-    def _kp_min_changed(self, value: str) -> None:
+    def _kp_min_changed(self, profile: int, value: str) -> None:
         rounded = round(float(value), 3)
-        self.kp_min.set(rounded)
-        self.kp_min_text.set(f"{rounded:.3f}")
-        if rounded > self.kp_max.get():
-            self.kp_max.set(rounded)
-            self.kp_max_text.set(f"{rounded:.3f}")
+        self.profile_kp_min[profile].set(rounded)
+        self.profile_kp_min_text[profile].set(f"{rounded:.3f}")
+        if rounded > self.profile_kp_max[profile].get():
+            self.profile_kp_max[profile].set(rounded)
+            self.profile_kp_max_text[profile].set(f"{rounded:.3f}")
         self._write_runtime_aim_settings()
 
-    def _kp_max_changed(self, value: str) -> None:
+    def _kp_max_changed(self, profile: int, value: str) -> None:
         rounded = round(float(value), 3)
-        self.kp_max.set(rounded)
-        self.kp_max_text.set(f"{rounded:.3f}")
-        if rounded < self.kp_min.get():
-            self.kp_min.set(rounded)
-            self.kp_min_text.set(f"{rounded:.3f}")
+        self.profile_kp_max[profile].set(rounded)
+        self.profile_kp_max_text[profile].set(f"{rounded:.3f}")
+        if rounded < self.profile_kp_min[profile].get():
+            self.profile_kp_min[profile].set(rounded)
+            self.profile_kp_min_text[profile].set(f"{rounded:.3f}")
         self._write_runtime_aim_settings()
 
-    def _kp_growth_changed(self, value: str) -> None:
+    def _kp_growth_changed(self, profile: int, value: str) -> None:
         rounded = round(float(value), 3)
-        self.kp_growth.set(rounded)
-        self.kp_growth_text.set(f"{rounded:.3f}")
+        self.profile_kp_growth[profile].set(rounded)
+        self.profile_kp_growth_text[profile].set(f"{rounded:.3f}")
         self._write_runtime_aim_settings()
 
-    def _aim_position_changed(self, value: str) -> None:
+    def _aim_position_changed(self, profile: int, value: str) -> None:
         rounded = round(float(value))
-        self.aim_position.set(rounded)
-        self.aim_position_text.set(f"{rounded:.0f}%")
+        self.profile_aim_position[profile].set(rounded)
+        self.profile_aim_position_text[profile].set(f"{rounded:.0f}%")
         self._write_runtime_aim_settings()
 
-    def _fov_changed(self, value: str) -> None:
+    def _fov_changed(self, profile: int, value: str) -> None:
         rounded = round(float(value))
-        self.fov.set(rounded)
-        self.fov_text.set(f"{rounded:.0f}")
+        self.profile_fov[profile].set(rounded)
+        self.profile_fov_text[profile].set(f"{rounded:.0f}")
         self._write_runtime_aim_settings()
 
     def _write_runtime_aim_settings(self) -> None:
         if self.process is None:
             return
+        profiles = [
+            {
+                "enabled": self.profile_enabled[index].get(),
+                "trigger": TRIGGERS[self.profile_trigger[index].get()],
+                "kp_min": self.profile_kp_min[index].get(),
+                "kp_max": self.profile_kp_max[index].get(),
+                "kp_growth": self.profile_kp_growth[index].get(),
+                "target_class": int(self.profile_target_class[index].get()),
+                "target_y_ratio": max(0.0, min(1.0, self.profile_aim_position[index].get() / 100.0)),
+                "fov_radius": self.profile_fov[index].get(),
+            }
+            for index in range(2)
+        ]
         values = {
-            "trigger": TRIGGERS[self.trigger.get()],
-            "target_class": int(self.target_class.get()),
-            "target_y_ratio": max(0.0, min(1.0, self.aim_position.get() / 100.0)),
-            "kp_min": self.kp_min.get(),
-            "kp_max": self.kp_max.get(),
-            "kp_growth": self.kp_growth.get(),
-            "fov_radius": self.fov.get(),
+            # Top-level keys mirror profile 1 for older runtime consumers.
+            "target_class": profiles[0]["target_class"],
+            "target_y_ratio": profiles[0]["target_y_ratio"],
+            "fov_radius": profiles[0]["fov_radius"],
+            "profiles": profiles,
         }
         temporary = self.runtime_aim_file.with_suffix(".tmp")
         try:

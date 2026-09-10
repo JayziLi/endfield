@@ -95,15 +95,15 @@ def run_pipeline_benchmark(
             sequence = snapshot.sequence
             processing_started = time.perf_counter()
             queue_ms = max(0.0, (processing_started - snapshot.ready_at) * 1000.0)
-            detections = detector.detect(snapshot.frame, target_class=config.aim.target_class)
+            detections = detector.detect(snapshot.frame, target_class=config.aim_profile_1.target_class)
             target_started = time.perf_counter()
             select_target(
                 detections,
                 snapshot.frame.shape[1],
                 snapshot.frame.shape[0],
-                config.aim.target_y_ratio,
-                config.aim.fov_radius,
-                config.aim.target_class,
+                config.aim_profile_1.target_y_ratio,
+                config.aim_profile_1.fov_radius,
+                config.aim_profile_1.target_class,
             )
             completed_at = time.perf_counter()
             if warmup_frames > 0:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import configparser
 import tomllib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from io import StringIO
 from pathlib import Path
 from typing import get_type_hints
@@ -46,7 +46,7 @@ class ObsConfig:
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
     path: Path
-    provider: str = "cuda"
+    provider: str = "auto"
     cuda_graph: bool = True
     gpu_preprocess: bool = True
     output_format: str = "yolov5"
@@ -58,7 +58,7 @@ class ModelConfig:
 @dataclass(frozen=True, slots=True)
 class KmboxConfig:
     enabled: bool = True
-    host: str = "192.168.2.100"
+    host: str = "192.168.1.100"
     port: int = 8808
     uuid: str = ""
     monitor_port: int = 5002
@@ -68,16 +68,23 @@ class KmboxConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class AimConfig:
+class AimProfileConfig:
     enabled: bool = True
     trigger: str = "right"
-    target_class: int = 0
-    target_y_ratio: float = 0.4
     kp_min: float = 0.1
     kp_max: float = 0.164
     kp_growth: float = 0.167
-    smoothing: float = 0.35
-    deadzone: float = 1.5
+    target_class: int = 0
+    target_y_ratio: float = 0.4
+    fov_radius: float = 150.0
+
+
+@dataclass(frozen=True, slots=True)
+class AimConfig:
+    target_class: int = 0
+    target_y_ratio: float = 0.4
+    smoothing: float = 1.0
+    deadzone: float = 2.0
     max_step: int = 30
     fov_radius: float = 150.0
 
@@ -91,6 +98,14 @@ class AppConfig:
     model: ModelConfig
     kmbox: KmboxConfig
     aim: AimConfig
+    aim_profile_1: AimProfileConfig = field(default_factory=AimProfileConfig)
+    aim_profile_2: AimProfileConfig = field(
+        default_factory=lambda: AimProfileConfig(enabled=False, trigger="left")
+    )
+
+    @property
+    def aim_profiles(self) -> tuple[AimProfileConfig, AimProfileConfig]:
+        return (self.aim_profile_1, self.aim_profile_2)
 
 
 def load_config(path: str | Path, *, validate_model: bool = True) -> AppConfig:
@@ -102,7 +117,10 @@ def load_config(path: str | Path, *, validate_model: bool = True) -> AppConfig:
     udp = UdpConfig(**raw.get("udp", {}))
     obs = ObsConfig(**raw["obs"])
     model_raw = dict(raw["model"])
-    model_raw["path"] = Path(model_raw["path"])
+    model_path = Path(model_raw["path"])
+    if not model_path.is_absolute():
+        model_path = config_path.parent / model_path
+    model_raw["path"] = model_path.resolve()
     # Layout is derived from every model's actual output shape. Keep accepting
     # the old setting so existing files migrate without user intervention.
     model_raw["output_layout"] = "auto"
@@ -111,7 +129,42 @@ def load_config(path: str | Path, *, validate_model: bool = True) -> AppConfig:
     aim_raw = dict(raw.get("aim", {}))
     aim_raw.pop("gain_x", None)
     aim_raw.pop("gain_y", None)
+    legacy_profile = {
+        "enabled": _as_bool(aim_raw.pop("enabled", True)),
+        "trigger": str(aim_raw.pop("trigger", "right")),
+        "kp_min": float(aim_raw.pop("kp_min", 0.1)),
+        "kp_max": float(aim_raw.pop("kp_max", 0.164)),
+        "kp_growth": float(aim_raw.pop("kp_growth", 0.167)),
+    }
     aim = AimConfig(**aim_raw)
+    # Target settings used to be shared in [aim]; they now live in each aim
+    # profile. Old files only carry them in [aim], so inherit them as defaults.
+    shared_target_defaults = {
+        "target_class": aim.target_class,
+        "target_y_ratio": aim.target_y_ratio,
+        "fov_radius": aim.fov_radius,
+    }
+    profile_1_raw = {**shared_target_defaults, **raw.get("aim_profile_1", legacy_profile)}
+    profile_1_raw.pop("gain_x", None)
+    profile_1_raw.pop("gain_y", None)
+    profile_1 = AimProfileConfig(**profile_1_raw)
+    profile_2_raw = raw.get("aim_profile_2")
+    profile_2 = (
+        AimProfileConfig(
+            **{key: value for key, value in {**shared_target_defaults, **profile_2_raw}.items() if key not in {"gain_x", "gain_y"}}
+        )
+        if profile_2_raw is not None
+        else AimProfileConfig(
+            enabled=False,
+            trigger=_unused_trigger(profile_1.trigger),
+            kp_min=profile_1.kp_min,
+            kp_max=profile_1.kp_max,
+            kp_growth=profile_1.kp_growth,
+            target_class=aim.target_class,
+            target_y_ratio=aim.target_y_ratio,
+            fov_radius=aim.fov_radius,
+        )
+    )
 
     if validate_model and not model.path.is_file():
         raise FileNotFoundError(f"ONNX model not found: {model.path}")
@@ -135,30 +188,69 @@ def load_config(path: str | Path, *, validate_model: bool = True) -> AppConfig:
         raise ValueError(f"Unsupported YOLO output layout: {model.output_layout}")
     if not 0 <= model.confidence <= 1 or not 0 <= model.iou <= 1:
         raise ValueError("Detection confidence and IoU must be between 0 and 1")
-    if aim.trigger not in {"left", "right", "side1", "side2"}:
-        raise ValueError(f"Unsupported aim trigger: {aim.trigger}")
     if aim.target_class < 0:
         raise ValueError("Target class must be zero or greater")
     if not 0 <= aim.target_y_ratio <= 1:
         raise ValueError("Aim position must be between 0 and 1")
-    if aim.kp_min < 0 or aim.kp_max < aim.kp_min or aim.kp_growth < 0:
-        raise ValueError("Dynamic Kp requires 0 <= minimum <= maximum and a non-negative growth slope")
     if aim.fov_radius <= 0:
         raise ValueError("FOV radius must be positive")
-    return AppConfig(input=input_config, ui=ui, udp=udp, obs=obs, model=model, kmbox=kmbox, aim=aim)
+    _validate_aim_profiles((profile_1, profile_2))
+    return AppConfig(
+        input=input_config,
+        ui=ui,
+        udp=udp,
+        obs=obs,
+        model=model,
+        kmbox=kmbox,
+        aim=aim,
+        aim_profile_1=profile_1,
+        aim_profile_2=profile_2,
+    )
 
 
 def save_config(config: AppConfig, path: str | Path) -> None:
-    raw = asdict(config)
-    raw["model"]["path"] = str(config.model.path).replace("\\", "/")
     target = Path(path)
+    raw = asdict(config)
+    model_path = config.model.path.resolve()
+    try:
+        stored_model_path = model_path.relative_to(target.resolve().parent)
+    except ValueError:
+        stored_model_path = model_path
+    raw["model"]["path"] = str(stored_model_path).replace("\\", "/")
     temporary = target.with_name(f".{target.stem}.tmp{target.suffix}")
     try:
         _write_config(temporary, raw)
-        load_config(temporary)
+        load_config(temporary, validate_model=False)
         temporary.replace(target)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def default_config() -> AppConfig:
+    """Return the safe configuration used by a first-time installation."""
+
+    aim = AimConfig()
+    return AppConfig(
+        input=InputConfig(),
+        ui=UiConfig(),
+        udp=UdpConfig(),
+        obs=ObsConfig(host="127.0.0.1"),
+        model=ModelConfig(path=Path("models/yolov5n.onnx")),
+        kmbox=KmboxConfig(enabled=False),
+        aim=aim,
+        aim_profile_1=AimProfileConfig(
+            target_class=aim.target_class,
+            target_y_ratio=aim.target_y_ratio,
+            fov_radius=aim.fov_radius,
+        ),
+        aim_profile_2=AimProfileConfig(
+            enabled=False,
+            trigger="left",
+            target_class=aim.target_class,
+            target_y_ratio=aim.target_y_ratio,
+            fov_radius=aim.fov_radius,
+        ),
+    )
 
 
 def _read_config(path: Path) -> dict:
@@ -177,6 +269,8 @@ def _read_config(path: Path) -> dict:
         "model": ModelConfig,
         "kmbox": KmboxConfig,
         "aim": AimConfig,
+        "aim_profile_1": AimProfileConfig,
+        "aim_profile_2": AimProfileConfig,
     }
     return {
         name: _convert_section(dict(parser[name]), section_type)
@@ -199,6 +293,31 @@ def _convert_section(values: dict[str, str], section_type: type) -> dict:
         else:
             converted[key] = value
     return converted
+
+
+def _unused_trigger(primary: str) -> str:
+    return "left" if primary != "left" else "right"
+
+
+def _as_bool(value: object) -> bool:
+    return value if isinstance(value, bool) else str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validate_aim_profiles(profiles: tuple[AimProfileConfig, AimProfileConfig]) -> None:
+    supported = {"left", "right", "side1", "side2"}
+    for profile in profiles:
+        if profile.trigger not in supported:
+            raise ValueError(f"Unsupported aim trigger: {profile.trigger}")
+        if profile.kp_min < 0 or profile.kp_max < profile.kp_min or profile.kp_growth < 0:
+            raise ValueError("Dynamic Kp requires 0 <= minimum <= maximum and a non-negative growth slope")
+        if profile.target_class < 0:
+            raise ValueError("Target class must be zero or greater")
+        if not 0 <= profile.target_y_ratio <= 1:
+            raise ValueError("Aim position must be between 0 and 1")
+        if profile.fov_radius <= 0:
+            raise ValueError("FOV radius must be positive")
+    if profiles[0].trigger == profiles[1].trigger:
+        raise ValueError("Aim profiles must use different trigger buttons")
 
 
 def _write_config(path: Path, raw: dict) -> None:

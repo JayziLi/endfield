@@ -4,3 +4,20 @@
 __pycache__/
 *.pyc
 *.log
+build/
+dist/
+
+# Personal runtime configuration. Copy the checked-in examples on first run.
+settings.txt
+config.toml
+settings.local.txt
+config.local.toml
+
+# Models are downloaded locally or supplied by the user, never committed.
+models/
+*.onnx
+*.engine
+*.plan
+
+# 延迟日志（运行时产生，动辄十几 MB）
+latency-*.csv
