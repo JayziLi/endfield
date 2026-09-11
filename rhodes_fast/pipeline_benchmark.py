@@ -15,6 +15,7 @@ import numpy as np
 import onnxruntime as ort
 
 from .config import AppConfig
+from .console import configure_console_output
 from .detector import YoloDetector
 from .pipeline import create_source, select_target, source_label
 
@@ -58,6 +59,7 @@ def run_pipeline_benchmark(
     output_path: Path | None = None,
     warmup_frames: int = 30,
 ) -> Path | None:
+    configure_console_output()
     text = lambda zh, en: zh if config.ui.language == "zh" else en
     print(text("正在加载模型和加速引擎...", "Loading model and acceleration engine..."))
     detector = YoloDetector(config.model)

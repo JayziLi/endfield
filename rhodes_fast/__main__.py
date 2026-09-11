@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .console import configure_console_output
 from .config import default_config, load_config, save_config
 from .model_download import ensure_default_model
 from .pipeline import (
@@ -22,6 +23,7 @@ def _positive_int(value: str) -> int:
 
 
 def main() -> None:
+    configure_console_output()
     parser = argparse.ArgumentParser(description="Low-latency OBS YOLO inference with KMBox control")
     parser.add_argument("--config", type=Path, default=Path("settings.txt"))
     parser.add_argument("--stop-file", type=Path, help=argparse.SUPPRESS)

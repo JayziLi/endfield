@@ -9,6 +9,7 @@ from typing import Protocol
 import numpy as np
 
 from .config import AppConfig
+from .console import configure_console_output
 from .detector import Detection, YoloDetector
 from .kmbox_control import KmboxController
 from .latency_log import LatencyLogWriter, LatencySample, estimate_loop_delay, read_latency_log
@@ -207,6 +208,7 @@ def run_pipeline(
     runtime_aim_file: Path | None = None,
     latency_log: Path | None = None,
 ) -> None:
+    configure_console_output()
     for note in keep_running_at_full_speed():
         print(note)
     print(_text(config, "正在加载模型和加速引擎...", "Loading model and acceleration engine..."))
@@ -526,6 +528,7 @@ def _latency_report(config: AppConfig, writer: LatencyLogWriter) -> str:
 
 
 def benchmark_model(config: AppConfig, iterations: int, stop_file: Path | None = None) -> None:
+    configure_console_output()
     print(_text(config, "正在加载模型和加速引擎...", "Loading model and acceleration engine..."))
     detector = YoloDetector(config.model)
     detector.warmup()
@@ -566,6 +569,7 @@ def benchmark_model(config: AppConfig, iterations: int, stop_file: Path | None =
 
 
 def check_connections(config: AppConfig, stop_file: Path | None = None) -> None:
+    configure_console_output()
     failures: list[str] = []
     if config.input.mode == "obs_websocket":
         client = ObsClient(config.obs)
