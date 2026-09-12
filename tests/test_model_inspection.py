@@ -76,6 +76,40 @@ class ModelInspectionTests(unittest.TestCase):
         self.assertEqual(contract.output_index, 1)
         self.assertEqual(contract.output_layout, "candidates_first")
 
+    def test_ultralytics_end2end_metadata_overrides_stale_format_hint(self) -> None:
+        session = SimpleNamespace(
+            get_outputs=lambda: [SimpleNamespace(shape=[1, 300, 6])],
+            get_modelmeta=lambda: SimpleNamespace(
+                custom_metadata_map={
+                    "end2end": "True",
+                    "names": "{0: 'person', 1: 'bicycle'}",
+                }
+            ),
+        )
+
+        contract = inspect_session(session, "yolov5")
+
+        self.assertEqual(contract.output_format, "end2end")
+        self.assertEqual(contract.output_layout, "candidates_first")
+        self.assertEqual(contract.class_count, 2)
+
+    def test_ultralytics_segment_end2end_output_keeps_mask_columns(self) -> None:
+        session = SimpleNamespace(
+            get_outputs=lambda: [
+                SimpleNamespace(shape=[1, 300, 38]),
+                SimpleNamespace(shape=[1, 32, 80, 80]),
+            ],
+            get_modelmeta=lambda: SimpleNamespace(
+                custom_metadata_map={"end2end": "True", "names": "{0: '0', 1: 'Enemy'}"}
+            ),
+        )
+
+        contract = inspect_session(session, "yolov5")
+
+        self.assertEqual(contract.output_format, "end2end")
+        self.assertEqual(contract.output_shape, (1, 300, 38))
+        self.assertEqual(contract.output_index, 0)
+
     def test_format_minimum_resolves_ultra_small_candidate_axis(self) -> None:
         contract = infer_contract_from_shape((1, 4, 9), output_format_hint="yolov5")
         self.assertEqual(contract.output_layout, "candidates_first")

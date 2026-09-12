@@ -34,7 +34,9 @@ class TargetSelectionTests(unittest.TestCase):
         self.assertTrue(all(center < 160 for center in selected_centers))
 
     def test_new_target_must_stay_better_before_lock_switches(self) -> None:
-        selector = TargetSelector()
+        # 显式给 switch_frames, 这条测的是滞回机制本身而不是默认值取多少。默认值已从
+        # 3 帧改到 24 帧: 241fps 下 3 帧只有 12 毫秒, 等于没有滞回。
+        selector = TargetSelector(switch_frames=3)
         current = Detection(110, 150, 130, 170, 0.9, 0)
         farther = Detection(230, 150, 250, 170, 0.9, 0)
         selected = selector.select(
@@ -62,26 +64,29 @@ class TargetSelectionTests(unittest.TestCase):
         self.assertEqual(selected_centers, [120, 120, 120, 170])
 
     def test_replacement_after_locked_target_disappears_is_reported_as_changed(self) -> None:
-        selector = TargetSelector()
+        # 交班的时机改了: 要等 lost_frames 帧确认目标真的不见了, 而不是漏一帧就交。
+        # 掉检和真消失在单帧上无法区分, 而漏一帧就交班意味着 241fps 下每 80 毫秒
+        # 就可能换一个人打(实测掉检 5% 时 12.9 次/秒)。详见 test_target_selector.py。
+        selector = TargetSelector(lost_frames=3)
         locked = Detection(110, 150, 130, 170, 0.9, 0)
         replacement = Detection(150, 150, 170, 170, 0.9, 0)
-        selector.select(
-            [locked],
-            frame_width=320,
-            frame_height=320,
-            target_y_ratio=0.5,
-            fov_radius=100,
-            target_class=0,
-        )
 
-        selected = selector.select(
-            [replacement],
-            frame_width=320,
-            frame_height=320,
-            target_y_ratio=0.5,
-            fov_radius=100,
-            target_class=0,
-        )
+        def pick(detections):
+            return selector.select(
+                detections,
+                frame_width=320,
+                frame_height=320,
+                target_y_ratio=0.5,
+                fov_radius=100,
+                target_class=0,
+            )
+
+        pick([locked])
+        for _ in range(2):
+            # 空等期间宁可不瞄, 也不要瞄到另一个人身上。
+            self.assertIsNone(pick([replacement]))
+
+        selected = pick([replacement])
 
         self.assertEqual(selected, replacement)
         self.assertTrue(selector.changed)
@@ -226,6 +231,28 @@ class TargetSelectionTests(unittest.TestCase):
         target_only = decode_yolo(output, target_class=1, **arguments)
 
         self.assertEqual(target_only, [item for item in all_detections if item.class_id == 1])
+
+    def test_end2end_segmentation_output_ignores_mask_coefficients(self) -> None:
+        output = np.zeros((1, 2, 38), dtype=np.float32)
+        output[0, 0, :6] = [10.0, 20.0, 30.0, 40.0, 0.9, 1.0]
+        output[0, 1, :6] = [50.0, 60.0, 80.0, 100.0, 0.8, 0.0]
+
+        detections = decode_yolo(
+            output,
+            frame_width=320,
+            frame_height=320,
+            input_width=320,
+            input_height=320,
+            output_format="end2end",
+            output_layout="candidates_first",
+            confidence_threshold=0.25,
+            iou_threshold=0.5,
+            target_class=1,
+        )
+
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0].class_id, 1)
+        self.assertEqual((detections[0].x1, detections[0].y1), (10.0, 20.0))
 
 
 if __name__ == "__main__":

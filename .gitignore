@@ -15,9 +15,16 @@ config.local.toml
 
 # Models are downloaded locally or supplied by the user, never committed.
 models/
+MODEL/
 *.onnx
 *.engine
 *.plan
+*.pt
+*.pth
 
 # 延迟日志（运行时产生，动辄十几 MB）
 latency-*.csv
+.loop-latency.json
+
+# 用户自己装的控制算法
+algorithms/

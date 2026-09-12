@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import json
 import tomllib
 from dataclasses import asdict, dataclass, field
 from io import StringIO
@@ -77,6 +78,8 @@ class AimProfileConfig:
     target_class: int = 0
     target_y_ratio: float = 0.4
     fov_radius: float = 150.0
+    algorithm: str = "p"
+    algorithm_params: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +293,10 @@ def _convert_section(values: dict[str, str], section_type: type) -> dict:
             converted[key] = int(value)
         elif expected is float:
             converted[key] = float(value)
+        elif expected is dict or getattr(expected, "__origin__", None) is dict:
+            # INI 一行只能是字符串, 所以字典按 JSON 存。TOML 路径不走这里,
+            # tomli_w 原生支持嵌套表。
+            converted[key] = json.loads(value) if value.strip() else {}
         else:
             converted[key] = value
     return converted
@@ -326,7 +333,11 @@ def _write_config(path: Path, raw: dict) -> None:
         return
     parser = configparser.ConfigParser(interpolation=None)
     for section, values in raw.items():
-        parser[section] = {key: str(value) for key, value in values.items()}
+        parser[section] = {
+            # str(dict) 出来的是 Python repr（单引号）, json.loads 读不回来。
+            key: json.dumps(value) if isinstance(value, dict) else str(value)
+            for key, value in values.items()
+        }
     buffer = StringIO()
     parser.write(buffer)
     content = "\n".join(line.rstrip() for line in buffer.getvalue().splitlines())

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import statistics
 import time
@@ -8,11 +9,20 @@ from typing import Protocol
 
 import numpy as np
 
+from .aim_algorithms import set_installed_algorithms
+from .algorithm_library import load_installed
 from .config import AppConfig
 from .console import configure_console_output
 from .detector import Detection, YoloDetector
 from .kmbox_control import KmboxController
-from .latency_log import LatencyLogWriter, LatencySample, estimate_loop_delay, read_latency_log
+from .latency_log import (
+    MEASUREMENT_NAME,
+    LatencyLogWriter,
+    LatencySample,
+    estimate_loop_delay,
+    read_latency_log,
+    save_measurement,
+)
 from .process_priority import keep_running_at_full_speed
 from .obs_source import ObsClient, ObsScreenshotSource
 from .preview import PreviewPublisher
@@ -33,28 +43,56 @@ class FrameSource(Protocol):
     def wait_next(self, after_sequence: int, timeout: float = 3.0): ...
 
 
+# 自身位移的衰减峰值系数。0.95^7 ≈ 0.70, 也就是峰值能撑过实测的 7 帧回路延迟。
+_MOTION_BUDGET_DECAY = 0.95
+
+
+def next_motion_budget(previous: float, movement: tuple[int, int]) -> float:
+    """我们自己最近发了多大的位移 —— 目标在画面上就跟着挪同样多。
+
+    取衰减峰值而不是当前指令: 指令要绕完整条回路才看得见(实测 7 帧), 拉枪收尾时
+    当前指令已经很小, 而画面上的目标还在按七帧前那个大指令的幅度移动。只看当前值
+    会在收尾那几帧把关联半径收得太紧, 正好在准心快贴上去的时候丢掉目标。
+    """
+    return max(math.hypot(*movement), previous * _MOTION_BUDGET_DECAY)
+
+
 class TargetSelector:
     def __init__(
         self,
         *,
-        association_radius: float = 50.0,
+        association_radius: float = 24.0,
         switch_ratio: float = 0.8,
-        switch_frames: int = 3,
+        switch_frames: int = 24,
+        lost_frames: int = 24,
     ) -> None:
+        # 关联半径按「一帧里目标可能移动多少」定, 不是按检测框大小。241fps 下
+        # 482px/s 的目标每帧只走 2px, 24px 已经很宽裕。原来的 50px 太松: 旁边
+        # 25px 站着的另一个人妥妥落在里面, 掉检那一帧就被当成同一个目标接管。
         self.association_radius = association_radius
         self.switch_ratio = switch_ratio
+        # 原来是 3 帧, 在 241fps 下只有 12 毫秒 —— 等于没有滞回(那个默认值大概是按
+        # 60fps 定的)。24 帧 ≈ 100ms, 和 lost_frames 一致。
         self.switch_frames = switch_frames
+        # 认不出当前目标时先空等这么多帧再放手。24 帧 ≈ 100ms @241fps。
+        self.lost_frames = lost_frames
         self._target: Detection | None = None
         self._pending_target: Detection | None = None
         self._pending_frames = 0
+        self._lost = 0
         self._selection_key: tuple[int, float] | None = None
         self.changed = False
+        # 空等中(锁着一个目标但这一帧认不出来)。管线靠它决定要不要清算法状态:
+        # 空等期间清掉在途指令窗口的话, 扣在途的算法会以为什么都没发过。
+        self.coasting = False
 
     def reset(self) -> None:
         self._target = None
         self._clear_pending()
+        self._lost = 0
         self._selection_key = None
         self.changed = False
+        self.coasting = False
 
     def select(
         self,
@@ -64,11 +102,13 @@ class TargetSelector:
         target_y_ratio: float,
         fov_radius: float,
         target_class: int,
+        motion_budget: float = 0.0,
     ) -> Detection | None:
         selection_key = (target_class, target_y_ratio)
         if selection_key != self._selection_key:
             self._target = None
             self._clear_pending()
+            self._lost = 0
             self._selection_key = selection_key
         eligible = _eligible_targets(
             detections,
@@ -78,42 +118,50 @@ class TargetSelector:
             fov_radius,
             target_class,
         )
-        if not eligible:
-            self.changed = self._target is not None
-            self._target = None
-            self._clear_pending()
-            return None
-
-        best_distance_sq, best = min(eligible, key=lambda item: item[0])
         if self._target is None:
+            self.coasting = False
+            if not eligible:
+                self.changed = False
+                return None
+            _, best = min(eligible, key=lambda item: item[0])
             self._target = best
             self._clear_pending()
+            self._lost = 0
             self.changed = True
             return best
 
-        previous_x = self._target.center_x
-        previous_y = self._target.aim_y(target_y_ratio)
-        _, matched = min(
-            eligible,
-            key=lambda item: (item[1].center_x - previous_x) ** 2
-            + (item[1].aim_y(target_y_ratio) - previous_y) ** 2,
-        )
-        association_distance_sq = (
-            (matched.center_x - previous_x) ** 2
-            + (matched.aim_y(target_y_ratio) - previous_y) ** 2
-        )
-        target_width = abs(self._target.x2 - self._target.x1)
-        target_height = abs(self._target.y2 - self._target.y1)
-        association_limit = min(
-            self.association_radius,
-            max(12.0, math.hypot(target_width, target_height)),
-        )
-        if association_distance_sq > association_limit * association_limit:
-            self._target = best
+        matched = self._associate(eligible, target_y_ratio, motion_budget)
+        if matched is None:
+            # 掉检和「真的不见了」在这一帧上无法区分, 所以先空等。
+            #
+            # 原来的做法是漏一帧就交班: 关联落到另一个目标身上, 在半径内静默接管、
+            # 超出半径就立刻跳到最近的那个, 两条路都绕过了切换滞回。实测掉检 5% 时
+            # 真实目标切换 12.9 次/秒 —— 241fps 下每 78 毫秒换一个人打。
+            #
+            # 空等期间返回 None, 也就是这一帧不动鼠标。宁可少瞄一帧, 也不要瞄到另一个
+            # 人身上: 前者你几乎感觉不到, 后者是准心当场甩走。
+            self._lost += 1
+            if self._lost < self.lost_frames:
+                self._clear_pending()
+                self.changed = False
+                self.coasting = True
+                return None
             self._clear_pending()
+            self._lost = 0
+            self.coasting = False
+            if not eligible:
+                self._target = None
+                self.changed = True
+                return None
+            _, best = min(eligible, key=lambda item: item[0])
+            self._target = best
             self.changed = True
             return best
 
+        # 认出来了就清零。一帧有一帧没的情况下不能慢慢攒够帧数就放手。
+        self._lost = 0
+        self.coasting = False
+        best_distance_sq, best = min(eligible, key=lambda item: item[0])
         center_x = frame_width * 0.5
         center_y = frame_height * 0.5
         matched_distance_sq = (
@@ -153,6 +201,48 @@ class TargetSelector:
             self._target = matched
             self.changed = False
         return self._target
+
+    def _associate(
+        self,
+        eligible: list[tuple[float, Detection]],
+        target_y_ratio: float,
+        motion_budget: float,
+    ) -> Detection | None:
+        """这一帧里还认得出当前目标吗。认不出返回 None。
+
+        motion_budget 是「我们自己最近发了多大的位移」。关联比的是屏幕坐标, 而我们
+        一动, 目标在画面上就跟着挪同样多 —— 拉枪时 max_step=30, 每帧挪 30px, 光靠
+        收紧后的半径根本兜不住(实测 300px 拉枪在第 8 帧, 也就是指令开始落地的时刻,
+        断掉关联, 然后空等满 24 帧才放手: 准心在拉枪途中冻住 100 毫秒)。
+
+        所以半径跟着我们自己的速度走: 动得快就放宽, 不动就收紧 —— 而不动的时候恰恰
+        就是最怕把旁边那个人认成自己目标的时候。两个要求本来是冲突的(实测半径 24 时
+        掉检 5% 的切换 0.9 次/秒但拉枪冻 24 帧; 半径 50 时不冻但切换涨到 3.4 次/秒),
+        这样才能各取所需。
+        """
+        if not eligible or self._target is None:
+            return None
+        previous_x = self._target.center_x
+        previous_y = self._target.aim_y(target_y_ratio)
+
+        def gap(item: tuple[float, Detection]) -> float:
+            return (item[1].center_x - previous_x) ** 2 + (
+                item[1].aim_y(target_y_ratio) - previous_y
+            ) ** 2
+
+        candidate = min(eligible, key=gap)[1]
+        width = abs(self._target.x2 - self._target.x1)
+        height = abs(self._target.y2 - self._target.y1)
+        limit = (
+            min(self.association_radius, max(12.0, math.hypot(width, height)))
+            + max(0.0, motion_budget)
+        )
+        # 试过一条「半径内有两个候选就算认不准, 按掉检走空等」的规则, 实测更差:
+        # 空等等满就会放手并切到最近的那个, 于是把一次五五开的猜测(可能猜对)变成了
+        # 一次必然发生的切换 —— 无掉检场景的切换率从 0.0 涨到 1.5 次/秒。
+        # 位置信息本身分不开相距 25px 的两个人, 「猜最近的那个」已经是可得的最优答案。
+        # 真要分开得靠 IoU / 尺寸 / 外观, 那是另一件事。
+        return candidate if gap((0.0, candidate)) <= limit * limit else None
 
     def _clear_pending(self) -> None:
         self._pending_target = None
@@ -207,8 +297,20 @@ def run_pipeline(
     preview_enable_file: Path | None = None,
     runtime_aim_file: Path | None = None,
     latency_log: Path | None = None,
+    algorithms_dir: Path | None = None,
 ) -> None:
     configure_console_output()
+
+    def reload_algorithm_library() -> list[str]:
+        if algorithms_dir is None:
+            return []
+        installed, warnings = load_installed(algorithms_dir)
+        set_installed_algorithms(installed)
+        return warnings
+
+    # 必须在构造 KmboxController 之前: 控制器在构造时就按名字查算法, 晚一步就查不到。
+    for warning in reload_algorithm_library():
+        print(f"!! {warning}")
     for note in keep_running_at_full_speed():
         print(note)
     print(_text(config, "正在加载模型和加速引擎...", "Loading model and acceleration engine..."))
@@ -217,9 +319,19 @@ def run_pipeline(
     print(_cuda_graph_status(config, detector))
     print(_gpu_preprocess_status(config, detector))
     print(_text(config, "模型已就绪，正在连接画面输入和 KMBox...", "Model ready. Connecting input and KMBox..."))
-    controller = KmboxController(config.kmbox, config.aim, runtime_aim_file, profiles=config.aim_profiles)
+    controller = KmboxController(
+        config.kmbox,
+        config.aim,
+        runtime_aim_file,
+        profiles=config.aim_profiles,
+        reload_algorithms=reload_algorithm_library,
+    )
+    warning_text = _algorithm_warning_text(config, controller.algorithm_warnings)
+    if warning_text:
+        print(warning_text)
     controller.connect()
     target_selector = TargetSelector()
+    motion_budget = 0.0
     source = create_source(config)
     preview = (
         PreviewPublisher(preview_port, enabled_file=preview_enable_file)
@@ -278,6 +390,11 @@ def run_pipeline(
             processing_started = time.perf_counter()
             queue_ms = max(0.0, (processing_started - snapshot.ready_at) * 1000.0)
             controller.refresh_runtime_settings()
+            if controller.algorithm_notices:
+                # 取走而不是读: 这是一次性的事件, 留在列表里会每帧重打。
+                for notice in controller.algorithm_notices:
+                    print(notice, flush=True)
+                controller.algorithm_notices.clear()
             show_all_classes = preview is not None and preview.due
             detections = detector.detect(
                 snapshot.frame,
@@ -290,10 +407,11 @@ def run_pipeline(
                 controller.target_y_ratio,
                 controller.fov_radius,
                 controller.target_class,
+                motion_budget=motion_budget,
             )
             if target_selector.changed:
                 track_counter += 1
-                controller.reset()
+                controller.forget_target()
             send_ms = 0.0
             movement = (0, 0)
             trigger_active = controller.trigger_active()
@@ -304,11 +422,18 @@ def run_pipeline(
                 if movement != (0, 0):
                     moved += 1
                 send_ms = controller.last_send_ms
-            else:
+            elif not target_selector.coasting:
+                # 空等期间什么都不动: 算法状态(速度估计、风、弧线计划)对同一个目标
+                # 仍然有效, 在途指令更是物理事实。这里清掉的话, 目标回来的那一帧
+                # 「扣在途」会以为什么都没发过, 当场多走一截。
                 controller.reset()
+            motion_budget = next_motion_budget(motion_budget, movement)
             completed_at = time.perf_counter()
             total_ms = max(0.0, (completed_at - snapshot.first_packet_at) * 1000.0)
             if latency_writer is not None:
+                # 每帧取一次: 算法和增益可以在跑的过程中热切换, 存一份开局快照
+                # 会让切换之后的每一行都标错设置。
+                tuning = controller.active_profile
                 # 每帧都记。发指令需要按住瞄准键, 但看响应不需要——准心已经动了,
                 # 目标还在画面里, 误差照样能测。只记按键帧会把拉枪的响应丢掉。
                 latency_writer.write(
@@ -331,6 +456,17 @@ def run_pipeline(
                         trigger=trigger_active,
                         track_id=track_counter if target is not None else 0,
                         skipped=skipped,
+                        algorithm=tuning.algorithm,
+                        # 紧凑 + 排序: 同一套参数在两份日志里要长得一样, 否则分组时
+                        # 会被当成两套不同的设置。
+                        algorithm_params=json.dumps(
+                            tuning.algorithm_params,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        kp_min=tuning.kp_min,
+                        kp_max=tuning.kp_max,
+                        kp_growth=tuning.kp_growth,
                         total_ms=total_ms,
                         assembly_ms=snapshot.assembly_ms,
                         decode_ms=snapshot.decode_ms,
@@ -454,6 +590,20 @@ def compare_latency_logs(config: AppConfig, paths: list[Path]) -> str:
     return "\n".join(lines)
 
 
+def _algorithm_warning_text(config: AppConfig, warnings: list[str]) -> str:
+    """把控制算法的回退警告排成醒目的几行。
+
+    回退本身是有意的——启动失败会让人在游戏里才发现自瞄整个不工作, 更糟。
+    但回退必须响亮: 用户选的算法没生效, 手感和他预期的完全是两回事。
+    """
+    if not warnings:
+        return ""
+    return "\n".join(
+        _text(config, f"!! {warning}", f"!! {warning} (falling back to p)")
+        for warning in warnings
+    )
+
+
 def _latency_report(config: AppConfig, writer: LatencyLogWriter) -> str:
     lines = [
         _text(
@@ -475,6 +625,9 @@ def _latency_report(config: AppConfig, writer: LatencyLogWriter) -> str:
             )
         )
         return "\n".join(lines)
+    # 实测值只打印一次就没了, 但分享调校时要带上它——导入方得知道作者那台机器的
+    # 延迟, 才能判断扣在途和前馈的补偿量适不适合自己。
+    save_measurement(writer.path.parent / MEASUREMENT_NAME, estimate)
     trust = (
         _text(config, "可信", "reliable")
         if estimate.correlation >= 0.6
@@ -568,8 +721,17 @@ def benchmark_model(config: AppConfig, iterations: int, stop_file: Path | None =
     )
 
 
-def check_connections(config: AppConfig, stop_file: Path | None = None) -> None:
+def check_connections(
+    config: AppConfig, stop_file: Path | None = None, algorithms_dir: Path | None = None
+) -> None:
     configure_console_output()
+    # 自检也要先加载算法库。不加载的话, 用户只要用了自己装的算法, 自检就会报
+    # 「算法 X 找不到，已回退到 p」——纯属虚惊, 而自检本来是用来确认一切正常的。
+    if algorithms_dir is not None:
+        installed, library_warnings = load_installed(algorithms_dir)
+        set_installed_algorithms(installed)
+        for warning in library_warnings:
+            print(f"!! {warning}")
     failures: list[str] = []
     if config.input.mode == "obs_websocket":
         client = ObsClient(config.obs)
@@ -618,6 +780,9 @@ def check_connections(config: AppConfig, stop_file: Path | None = None) -> None:
             source.stop()
 
     controller = KmboxController(config.kmbox, config.aim, profiles=config.aim_profiles)
+    warning_text = _algorithm_warning_text(config, controller.algorithm_warnings)
+    if warning_text:
+        print(warning_text)
     try:
         controller.connect()
         print(

@@ -9,6 +9,7 @@ KMBox 一发指令准心立刻就动了，但这个位移要绕完「渲染→�
 from __future__ import annotations
 
 import csv
+import json
 import statistics
 from dataclasses import astuple, dataclass, fields
 from pathlib import Path
@@ -21,7 +22,18 @@ _DEFAULT_MAX_LAG = 30
 # 进程被强杀时缓冲区里的数据会全丢, 所以定期落盘, 把损失限制在不到一秒。
 _FLUSH_EVERY = 100
 # 旧版本写出的 CSV 没有这几列; 缺列时按「一直按住、始终同一个目标、没丢帧」补齐。
-_OPTIONAL_DEFAULTS = {"trigger": True, "track_id": 1, "skipped": 0}
+# algorithm 补空串而不是补 "p": 我们并不知道旧日志跑的是什么, 填一个具体名字
+# 就是撒谎。分析时先看 algorithm 是不是空的, 空的就说明这份日志没记设置。
+_OPTIONAL_DEFAULTS = {
+    "trigger": True,
+    "track_id": 1,
+    "skipped": 0,
+    "algorithm": "",
+    "algorithm_params": "",
+    "kp_min": 0.0,
+    "kp_max": 0.0,
+    "kp_growth": 0.0,
+}
 
 # 控制器是对*带噪的*测量值做反应的, 所以 dx 里混着 kp x 噪声, 而误差变化里也含同一个
 # 噪声——两者在滞后 1 帧处天然相关, 噪声越大这个假峰越强, 会把估计值拽到 1 帧。
@@ -48,6 +60,14 @@ class LatencySample:
     trigger: bool
     track_id: int
     skipped: int
+    # 这几列让日志自己说清楚是哪套设置跑出来的。没有它们, 两份日志没法比 ——
+    # 只能靠记性猜哪份是什么算法什么增益, 而 A/B 的前提就是知道两边各是什么。
+    # 按帧记而不是写在表头: 算法和增益现在可以在跑的过程中热切换。
+    algorithm: str = ""
+    algorithm_params: str = ""
+    kp_min: float = 0.0
+    kp_max: float = 0.0
+    kp_growth: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +93,9 @@ _CASTS = {
     "track_id": int,
     "skipped": int,
     "trigger": lambda value: value == "True",
+    # 缺省是 float。这两列不登记成 str 的话, 读一份新日志就当场崩。
+    "algorithm": str,
+    "algorithm_params": str,
 }
 
 
@@ -206,3 +229,37 @@ def _frame_interval_ms(samples: list[LatencySample]) -> float:
         if after.sequence - before.sequence == 1 and after.monotonic_ms > before.monotonic_ms
     ]
     return statistics.median(gaps) if gaps else 0.0
+
+
+MEASUREMENT_NAME = ".loop-latency.json"
+
+
+def save_measurement(path: Path, estimate: LoopDelayEstimate) -> None:
+    """把最近一次实测的回路延迟记下来, 供分享调校时比对。
+
+    只有 loop_ms 是必须的, 其余几项是为了人打开这个文件时能看懂。
+    """
+    payload = {
+        "loop_ms": round(estimate.loop_ms, 2),
+        "frames": estimate.frames,
+        "frame_interval_ms": round(estimate.frame_interval_ms, 3),
+        "correlation": round(estimate.correlation, 4),
+        "samples": estimate.samples,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        # 记不下来就算了, 不值得让一局打完的日志汇总因此报错。
+        pass
+
+
+def load_measurement(path: Path) -> float | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    value = payload.get("loop_ms") if isinstance(payload, dict) else None
+    if not isinstance(value, (int, float)):
+        return None
+    return float(value)

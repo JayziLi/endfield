@@ -8,7 +8,7 @@ from pathlib import Path
 
 import tomli_w
 
-from rhodes_fast.config import default_config, load_config, save_config
+from rhodes_fast.config import AimProfileConfig, default_config, load_config, save_config
 
 
 _ROOT = Path(__file__).parents[1]
@@ -206,6 +206,37 @@ class ConfigTests(unittest.TestCase):
             path.write_text(old, encoding="utf-8")
             loaded = load_config(path, validate_model=False)
         self.assertTrue(loaded.model.gpu_preprocess)
+
+    def test_algorithm_selection_round_trips_through_both_formats(self) -> None:
+        # settings.txt 是 INI, config.toml 是 TOML, 两条存储路径完全不同。
+        # 参数字典在 INI 里只能是一行 JSON 字符串, 很容易只修好一边。
+        # 用随仓库分发的示例配置, 不要读本机的 settings.txt / config.toml——
+        # 那两个文件是个人运行时配置, 没被 git 跟踪, 而且指向本机的模型路径。
+        for source in (_TEXT_CONFIG, _TOML_CONFIG):
+            with self.subTest(source=source.name):
+                original = load_config(source, validate_model=False)
+                changed = replace(
+                    original,
+                    aim_profile_1=replace(
+                        original.aim_profile_1,
+                        algorithm="inflight_ff",
+                        algorithm_params={"loop_delay_frames": 8.0, "gain": 1.0},
+                    ),
+                )
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / source.name
+                    save_config(changed, path)
+                    loaded = load_config(path, validate_model=False)
+                self.assertEqual(loaded.aim_profile_1.algorithm, "inflight_ff")
+                self.assertEqual(
+                    loaded.aim_profile_1.algorithm_params,
+                    {"loop_delay_frames": 8.0, "gain": 1.0},
+                )
+
+    def test_a_profile_without_an_algorithm_defaults_to_p(self) -> None:
+        # 升级前写出的配置文件里没有这两个键, 必须当成现状算法而不是报错。
+        self.assertEqual(AimProfileConfig().algorithm, "p")
+        self.assertEqual(AimProfileConfig().algorithm_params, {})
 
 
 if __name__ == "__main__":

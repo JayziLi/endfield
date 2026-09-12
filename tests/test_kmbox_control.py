@@ -455,6 +455,57 @@ class KmboxControllerTests(unittest.TestCase):
         self.assertEqual(controller.target_y_ratio, 0.7)
         self.assertEqual(controller.fov_radius, 220.0)
 
+    def test_an_unknown_algorithm_falls_back_loudly_instead_of_refusing_to_start(self) -> None:
+        # 启动失败会让人在游戏里才发现自瞄整个不工作, 比回退更糟; 但回退必须留痕。
+        controller = KmboxController(
+            KmboxConfig(uuid="00000000"),
+            AimConfig(),
+            profiles=_profiles(AimProfileConfig(algorithm="no_such_algorithm")),
+        )
+        self.assertEqual(controller.algorithm_name(0), "p")
+        self.assertTrue(controller.algorithm_warnings)
+
+    def test_a_runtime_settings_write_keeps_the_configured_algorithm(self) -> None:
+        # 运行时 JSON 只带 kp 那几项。重建 profile 时若不显式继承, 算法会被默默
+        # 重置成 p——用户在界面上拖一下 kp 滑块, 算法就换了。
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_file = Path(directory) / "aim.json"
+            runtime_file.write_text(
+                json.dumps(
+                    {
+                        "profiles": [
+                            {
+                                "enabled": True,
+                                "trigger": "right",
+                                "kp_min": 0.2,
+                                "kp_max": 0.2,
+                                "kp_growth": 0.0,
+                            },
+                            {
+                                "enabled": False,
+                                "trigger": "left",
+                                "kp_min": 0.1,
+                                "kp_max": 0.1,
+                                "kp_growth": 0.0,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            controller = KmboxController(
+                KmboxConfig(uuid="00000000"),
+                AimConfig(),
+                runtime_file,
+                profiles=_profiles(
+                    AimProfileConfig(algorithm="p", algorithm_params={"kd": 0.5})
+                ),
+            )
+            controller.refresh_runtime_settings(force=True)
+
+        self.assertEqual(controller._profiles[0].algorithm, "p")
+        self.assertEqual(controller._profiles[0].algorithm_params, {"kd": 0.5})
+
 
 if __name__ == "__main__":
     unittest.main()

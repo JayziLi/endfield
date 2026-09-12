@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import __version__
 from .theme import THEME
 
 
@@ -1022,7 +1023,7 @@ class Sidebar(QFrame):
             self.buttons[page_id] = button
             layout.addWidget(button)
         layout.addStretch(1)
-        version = QLabel("STABILITY // TECHNOLOGY\n\nv0.3.1")
+        version = QLabel(f"STABILITY // TECHNOLOGY\n\nv{__version__}")
         version.setProperty("role", "eyebrow")
         version.setContentsMargins(18, 0, 12, 0)
         layout.addWidget(version)

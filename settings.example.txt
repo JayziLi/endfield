@@ -54,6 +54,8 @@ fov_radius = 150.0
 [aim_profile_1]
 enabled = True
 trigger = right
+algorithm = p
+algorithm_params = {}
 kp_min = 0.1
 kp_max = 0.164
 kp_growth = 0.167
@@ -64,6 +66,8 @@ fov_radius = 150.0
 [aim_profile_2]
 enabled = False
 trigger = left
+algorithm = p
+algorithm_params = {}
 kp_min = 0.1
 kp_max = 0.164
 kp_growth = 0.167

@@ -17,7 +17,20 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+from .aim_algorithms import Param, available_algorithms, set_installed_algorithms
+from .algorithm_library import (
+    DuplicateAlgorithm,
+    LibraryError,
+    inspect_candidate,
+    install,
+    load_installed,
+    read_registry,
+    rename,
+    uninstall,
+)
 from .config import AppConfig, load_config, save_config
+from .latency_log import MEASUREMENT_NAME, load_measurement
+from .tuning_share import TuningError, TuningPreset, delay_warning, dump_preset, load_preset
 
 
 INPUT_MODES = {
@@ -47,6 +60,27 @@ def _display_path(path: Path, base_directory: Path) -> str:
         return str(path)
 
 
+def _resolve_model_path(path: str | Path, base_directory: Path) -> Path:
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = base_directory / candidate
+    return candidate.resolve()
+
+
+def algorithm_choices() -> dict[str, str]:
+    """界面显示名 -> 算法标识。和 TRIGGERS 那几个映射同一个写法。"""
+    return {
+        algorithm.DISPLAY_NAME: name
+        for name, algorithm in sorted(available_algorithms().items())
+    }
+
+
+def algorithm_param_specs(name: str) -> tuple[Param, ...]:
+    algorithm = available_algorithms().get(name)
+    # 配置里指着一个已删掉的算法时界面仍要画得出来, 所以不抛异常。
+    return algorithm.PARAMS if algorithm is not None else ()
+
+
 # 预览取帧的节拍。管线按 30fps 发, 这里 16 毫秒取一次(约 60Hz), 每一帧都能赶上
 # 自己那一拍。取帧慢于发帧的话画面步长会忽长忽短, 看着就是一顿一顿的。
 PREVIEW_POLL_MS = 16
@@ -72,6 +106,10 @@ class RhodesFastGui:
     def __init__(self, config_path: Path):
         self.config_path = config_path.resolve()
         self.config = load_config(self.config_path, validate_model=False)
+        # 下拉框要能列出用户自己装的算法, 所以界面也得加载一次算法库。
+        self.algorithms_dir = self.config_path.parent / "algorithms"
+        installed, self.library_warnings = load_installed(self.algorithms_dir)
+        set_installed_algorithms(installed)
         self.root = tk.Tk()
         self.root.title("Endfield")
         self.root.geometry("860x800")
@@ -108,6 +146,14 @@ class RhodesFastGui:
         style.configure("Subtle.TLabel", foreground="#667085")
         style.configure("TLabelframe", background="#f4f6f8", bordercolor="#cfd6df", relief="solid")
         style.configure("TLabelframe.Label", background="#f4f6f8", foreground="#344054", font=("Segoe UI Semibold", 10))
+        # 蓝边蓝标题: 控制算法是方案里最该先看到的一项, 底色保持一致免得内部控件露出色差。
+        style.configure("Focus.TLabelframe", background="#f4f6f8", bordercolor="#1677ff")
+        style.configure(
+            "Focus.TLabelframe.Label",
+            background="#f4f6f8",
+            foreground="#1677ff",
+            font=("Segoe UI Semibold", 10),
+        )
         style.configure("TButton", font=("Segoe UI Semibold", 10), padding=(12, 7))
         style.configure("Accent.TButton", background="#1677ff", foreground="white")
         style.map("Accent.TButton", background=[("active", "#095ec9"), ("disabled", "#a6c8f5")])
@@ -160,6 +206,19 @@ class RhodesFastGui:
         self.profile_kp_growth_text = [
             tk.StringVar(value=f"{profile.kp_growth:.3f}") for profile in cfg.aim_profiles
         ]
+        self.profile_algorithm = [
+            tk.StringVar(value=_display_value(algorithm_choices(), profile.algorithm))
+            for profile in cfg.aim_profiles
+        ]
+        self.profile_algorithm_params: list[dict[str, tk.DoubleVar]] = [
+            {
+                spec.name: tk.DoubleVar(
+                    value=profile.algorithm_params.get(spec.name, spec.default)
+                )
+                for spec in algorithm_param_specs(profile.algorithm)
+            }
+            for profile in cfg.aim_profiles
+        ]
         self._last_profile_triggers = [variable.get() for variable in self.profile_trigger]
         self.status = tk.StringVar(value="已就绪")
 
@@ -189,9 +248,11 @@ class RhodesFastGui:
         self.notebook.pack(fill="both", expand=True)
         run_tab = ttk.Frame(self.notebook, padding=8)
         advanced_tab = ttk.Frame(self.notebook, padding=14)
+        library_tab = ttk.Frame(self.notebook, padding=14)
         self.preview_tab = ttk.Frame(self.notebook, padding=8)
         self.notebook.add(run_tab, text="运行设置")
         self.notebook.add(advanced_tab, text="识别与控制")
+        self.notebook.add(library_tab, text="算法库")
         self.notebook.add(self.preview_tab, text="实时预览")
 
         self.preview_canvas = tk.Canvas(
@@ -303,6 +364,8 @@ class RhodesFastGui:
         highest_target_class = max(profile.target_class for profile in self.config.aim_profiles)
         initial_classes = [str(value) for value in range(max(7, highest_target_class + 1))]
         self.target_class_combos: list[ttk.Combobox] = []
+        self.algorithm_combos: list[ttk.Combobox] = []
+        self.algorithm_param_frames: list[ttk.Frame] = []
         for index in range(2):
             panel = ttk.LabelFrame(profiles, text=f"控制方案 {index + 1}", padding=12)
             panel.grid(row=0, column=index, sticky="nsew", padx=(0, 5) if index == 0 else (5, 0))
@@ -313,12 +376,43 @@ class RhodesFastGui:
                 variable=self.profile_enabled[index],
                 command=lambda profile=index: self._profile_enabled_changed(profile),
             ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
-            trigger_combo = self._combo_row(panel, 1, "触发方式", self.profile_trigger[index], TRIGGERS)
+            # 控制算法排在最前且单独成框: 它决定准心怎么动, 是这一栏里最该先看到的东西。
+            algorithm_box = ttk.LabelFrame(
+                panel, text="控制算法", padding=10, style="Focus.TLabelframe"
+            )
+            algorithm_box.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 10))
+            algorithm_box.columnconfigure(1, weight=1)
+            algorithm_combo = self._combo_row(
+                algorithm_box, 0, "算法", self.profile_algorithm[index], algorithm_choices()
+            )
+            algorithm_combo.bind(
+                "<<ComboboxSelected>>",
+                lambda _event, profile=index: self._algorithm_changed(profile),
+            )
+            self.algorithm_combos.append(algorithm_combo)
+            params_frame = ttk.Frame(algorithm_box)
+            params_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
+            params_frame.columnconfigure(1, weight=1)
+            self.algorithm_param_frames.append(params_frame)
+            self._rebuild_algorithm_params(index)
+            share = ttk.Frame(algorithm_box)
+            share.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            ttk.Button(
+                share,
+                text="导出调校…",
+                command=lambda profile=index: self._export_tuning(profile),
+            ).pack(side="left")
+            ttk.Button(
+                share,
+                text="导入调校…",
+                command=lambda profile=index: self._import_tuning(profile),
+            ).pack(side="left", padx=(8, 0))
+            trigger_combo = self._combo_row(panel, 2, "触发方式", self.profile_trigger[index], TRIGGERS)
             trigger_combo.bind(
                 "<<ComboboxSelected>>",
                 lambda _event, profile=index: self._profile_trigger_changed(profile),
             )
-            ttk.Label(panel, text="目标标签").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=6)
+            ttk.Label(panel, text="目标标签").grid(row=3, column=0, sticky="w", padx=(0, 12), pady=6)
             target_class_combo = ttk.Combobox(
                 panel,
                 textvariable=self.profile_target_class[index],
@@ -326,7 +420,7 @@ class RhodesFastGui:
                 state="readonly",
                 width=20,
             )
-            target_class_combo.grid(row=2, column=1, sticky="w", pady=4)
+            target_class_combo.grid(row=3, column=1, sticky="w", pady=4)
             target_class_combo.bind(
                 "<<ComboboxSelected>>",
                 lambda _event, profile=index: self._target_class_changed(profile),
@@ -334,7 +428,7 @@ class RhodesFastGui:
             self.target_class_combos.append(target_class_combo)
             self._slider_row(
                 panel,
-                3,
+                4,
                 "框内位置（顶部 0%）",
                 self.profile_aim_position[index],
                 self.profile_aim_position_text[index],
@@ -344,7 +438,7 @@ class RhodesFastGui:
             )
             self._slider_row(
                 panel,
-                4,
+                5,
                 "视野半径",
                 self.profile_fov[index],
                 self.profile_fov_text[index],
@@ -354,7 +448,7 @@ class RhodesFastGui:
             )
             self._slider_row(
                 panel,
-                5,
+                6,
                 "P 最小值",
                 self.profile_kp_min[index],
                 self.profile_kp_min_text[index],
@@ -364,7 +458,7 @@ class RhodesFastGui:
             )
             self._slider_row(
                 panel,
-                6,
+                7,
                 "P 最大值",
                 self.profile_kp_max[index],
                 self.profile_kp_max_text[index],
@@ -374,7 +468,7 @@ class RhodesFastGui:
             )
             self._slider_row(
                 panel,
-                7,
+                8,
                 "P 增长斜率",
                 self.profile_kp_growth[index],
                 self.profile_kp_growth_text[index],
@@ -382,6 +476,8 @@ class RhodesFastGui:
                 0.5,
                 lambda value, profile=index: self._kp_growth_changed(profile, value),
             )
+
+        self._build_library_tab(library_tab)
 
         log_box = ttk.LabelFrame(root, text="运行状态", padding=8)
         log_box.pack(fill="both", expand=True, pady=(12, 10))
@@ -400,6 +496,8 @@ class RhodesFastGui:
         )
         self.log.pack(fill="both", expand=True)
         self._append_log(f"准备就绪。当前输入：{_display_value(INPUT_MODES, self.config.input.mode)}。")
+        for warning in self.library_warnings:
+            self._append_log(warning)
 
         actions = ttk.Frame(root)
         actions.pack(side="bottom", fill="x", before=self.notebook)
@@ -421,6 +519,415 @@ class RhodesFastGui:
             text="记录延迟日志",
             variable=self.latency_log_enabled,
         ).pack(side="left", padx=(18, 0))
+
+    def _rebuild_algorithm_params(self, profile: int) -> None:
+        frame = self.algorithm_param_frames[profile]
+        for child in frame.winfo_children():
+            child.destroy()
+        name = algorithm_choices()[self.profile_algorithm[profile].get()]
+        variables: dict[str, tk.DoubleVar] = {}
+        for row, spec in enumerate(algorithm_param_specs(name)):
+            # 换算法时沿用同名参数的当前值, 免得来回切就被打回默认。
+            previous = self.profile_algorithm_params[profile].get(spec.name)
+            variable = tk.DoubleVar(
+                value=previous.get() if previous is not None else spec.default
+            )
+            variables[spec.name] = variable
+            ttk.Label(frame, text=spec.label).grid(
+                row=row, column=0, sticky="w", padx=(0, 12), pady=4
+            )
+            ttk.Spinbox(
+                frame,
+                textvariable=variable,
+                from_=spec.minimum,
+                to=spec.maximum,
+                increment=0.01,
+                width=10,
+            ).grid(row=row, column=1, sticky="w", pady=4)
+        self.profile_algorithm_params[profile] = variables
+        # 监听要在字典换上去之后再挂。挂早了, 重建途中触发的那一下会读到上一个
+        # 算法的参数名, 把半份配置推给管线。
+        for variable in variables.values():
+            variable.trace_add(
+                "write", lambda *_args: self._write_runtime_aim_settings()
+            )
+
+    def _algorithm_changed(self, profile: int) -> None:
+        self._rebuild_algorithm_params(profile)
+        self._write_runtime_aim_settings()
+        if self.process is not None:
+            self._append_log(
+                f"控制方案 {profile + 1} 正在切换为「{self.profile_algorithm[profile].get()}」…"
+            )
+
+    _LIBRARY_COLUMNS = ("显示名", "标识", "作者", "来源文件", "导入日期", "类别")
+
+    def _build_library_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+        ttk.Label(
+            parent,
+            text="这里列出所有能在控制方案里选的算法。导入别人写的 .py 之前会先让你看清楚它是什么。",
+            style="Subtle.TLabel",
+            wraplength=760,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        self.library_tree = ttk.Treeview(
+            parent, columns=self._LIBRARY_COLUMNS, show="headings", height=9
+        )
+        for column, width in zip(self._LIBRARY_COLUMNS, (190, 120, 100, 140, 120, 65)):
+            self.library_tree.heading(column, text=column)
+            self.library_tree.column(column, width=width, anchor="w")
+        self.library_tree.grid(row=1, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(parent, orient="vertical", command=self.library_tree.yview)
+        scroll.grid(row=1, column=1, sticky="ns")
+        self.library_tree.configure(yscrollcommand=scroll.set)
+        self.library_tree.bind(
+            "<<TreeviewSelect>>", lambda _event: self._library_selection_changed()
+        )
+
+        buttons = ttk.Frame(parent)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Button(buttons, text="导入算法…", command=self._import_algorithm).pack(side="left")
+        self.library_source_button = ttk.Button(
+            buttons, text="查看源码", command=self._show_algorithm_source, state="disabled"
+        )
+        self.library_source_button.pack(side="left", padx=(8, 0))
+        self.library_rename_button = ttk.Button(
+            buttons, text="重命名", command=self._rename_algorithm, state="disabled"
+        )
+        self.library_rename_button.pack(side="left", padx=(8, 0))
+        self.library_delete_button = ttk.Button(
+            buttons, text="删除", command=self._delete_algorithm, state="disabled"
+        )
+        self.library_delete_button.pack(side="left", padx=(8, 0))
+        ttk.Label(
+            parent,
+            text="内置算法随程序分发，不能改名也不能删除。刚导入的算法不用重启，在控制方案里直接选就行。",
+            style="Subtle.TLabel",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        self._refresh_library()
+
+    def _reload_algorithm_library(self) -> None:
+        """重新读一遍算法库, 并让控制方案的下拉框跟上。
+
+        下拉框存的是显示名, 而改名改的正是显示名。所以重载前先记下每个方案用的是
+        哪个标识, 重载后按标识把显示名写回去——不这么做, 存的名字会对不上任何一个
+        选项, 之后每次读表单都静默失败。
+        """
+        before = [
+            algorithm_choices().get(self.profile_algorithm[index].get()) for index in range(2)
+        ]
+        installed, warnings = load_installed(self.algorithms_dir)
+        set_installed_algorithms(installed)
+        choices = algorithm_choices()
+        names = set(choices.values())
+        for index, name in enumerate(before):
+            self.algorithm_combos[index].configure(values=list(choices))
+            if name is None or name in names:
+                if name is not None:
+                    self.profile_algorithm[index].set(_display_value(choices, name))
+                continue
+            # 正在用的算法被删掉了。悄悄换成别的会让手感莫名其妙变一个样, 得说出来。
+            self.profile_algorithm[index].set(_display_value(choices, "p"))
+            self._rebuild_algorithm_params(index)
+            self._append_log(f"控制方案 {index + 1} 用的算法已被删除，已改回比例控制。")
+        for warning in warnings:
+            self._append_log(warning)
+        self._write_runtime_aim_settings()
+
+    def _library_rows(self) -> list[tuple[str, str, str, str, str, str]]:
+        """内置 ∪ 注册表。
+
+        刚导入的算法还不在 available_algorithms() 里——那份是启动时加载的, 要重启
+        才会变。但「装没装上」得当场看见: 用户点了导入、提示说成功了, 回头列表里
+        一行没变的话, 只能以为坏了。所以列表读注册表, 不读已加载的那份。
+        """
+        installed = read_registry(self.algorithms_dir)
+        loaded = available_algorithms()
+        rows: list[tuple[str, str, str, str, str, str]] = []
+        for name in sorted(set(loaded) | set(installed)):
+            entry = installed.get(name)
+            if entry is None:
+                rows.append((loaded[name].DISPLAY_NAME, name, "Endfield", "—", "—", "内置"))
+            else:
+                rows.append(
+                    (
+                        entry.display_name,
+                        name,
+                        entry.author,
+                        entry.source_file,
+                        entry.imported_at or "—",
+                        "已导入",
+                    )
+                )
+        return rows
+
+    def _refresh_library(self) -> None:
+        self.library_tree.delete(*self.library_tree.get_children())
+        for row in self._library_rows():
+            self.library_tree.insert("", "end", iid=row[1], values=row)
+        self._library_selection_changed()
+
+    def _selected_algorithm(self) -> tuple[str, str] | None:
+        """返回 (标识, 类别), 没选中返回 None。"""
+        selection = self.library_tree.selection()
+        if not selection:
+            return None
+        values = self.library_tree.item(selection[0], "values")
+        return values[1], values[5]
+
+    def _library_selection_changed(self) -> None:
+        selected = self._selected_algorithm()
+        installed = selected is not None and selected[1] == "已导入"
+        state = "normal" if installed else "disabled"
+        self.library_rename_button.configure(state=state)
+        self.library_delete_button.configure(state=state)
+        self.library_source_button.configure(state=state)
+
+    def _import_algorithm(self) -> None:
+        source = filedialog.askopenfilename(
+            title="选择算法源码", filetypes=[("Python 源码", "*.py")], parent=self.root
+        )
+        if not source:
+            return
+        # 第一步只读文本和 ast。这个文件到这里为止一行都没有执行过。
+        try:
+            candidate = inspect_candidate(Path(source))
+        except LibraryError as error:
+            messagebox.showerror("导入失败", str(error), parent=self.root)
+            return
+        if not candidate.name:
+            messagebox.showerror("导入失败", "源码里找不到带 NAME 的算法类。", parent=self.root)
+            return
+        if not self._confirm_import(candidate):
+            return
+        self._install_candidate(candidate, replace_existing=False)
+
+    def _confirm_import(self, candidate) -> bool:
+        while True:
+            message = "\n".join(
+                [
+                    "确定要导入这个算法吗？",
+                    "",
+                    f"文件：{candidate.path.name}（{candidate.size_bytes / 1024:.1f} KB）",
+                    f"作者：{candidate.author}",
+                    f"标识：{candidate.name}",
+                    f"显示名：{candidate.display_name}",
+                    "",
+                    "算法是一段会在你机器上运行的 Python 代码。只导入你信得过的来源。",
+                    "",
+                    "选「是」查看源码，选「否」直接导入，选「取消」放弃。",
+                ]
+            )
+            answer = messagebox.askyesnocancel("导入算法", message, parent=self.root)
+            if answer is None:
+                return False
+            if not answer:
+                return True
+            self._show_source_window(candidate.path.name, candidate.source)
+
+    def _install_candidate(self, candidate, *, replace_existing: bool) -> None:
+        try:
+            entry = install(
+                self.algorithms_dir, candidate.path, replace_existing=replace_existing
+            )
+        except DuplicateAlgorithm as clash:
+            replace_it = messagebox.askokcancel(
+                "已有同名算法",
+                f"已存在同名算法「{clash.name}」（来自 {clash.existing_file}）。要替换吗？\n\n"
+                "替换会保留你给它起的显示名。",
+                parent=self.root,
+            )
+            if replace_it:
+                self._install_candidate(candidate, replace_existing=True)
+            return
+        except LibraryError as error:
+            messagebox.showerror("导入失败", str(error), parent=self.root)
+            return
+        self._reload_algorithm_library()
+        self._refresh_library()
+        messagebox.showinfo(
+            "导入成功",
+            f"「{entry.display_name}」已装进算法库，现在就能在控制方案里选它。",
+            parent=self.root,
+        )
+        self._append_log(f"算法库新增「{entry.display_name}」（{entry.name}）。")
+
+    def _show_algorithm_source(self) -> None:
+        selected = self._selected_algorithm()
+        if selected is None:
+            return
+        entry = read_registry(self.algorithms_dir).get(selected[0])
+        if entry is None:
+            return
+        path = self.algorithms_dir / entry.source_file
+        try:
+            self._show_source_window(entry.source_file, path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as error:
+            messagebox.showerror("打不开源码", str(error), parent=self.root)
+
+    def _show_source_window(self, title: str, source: str) -> None:
+        window = tk.Toplevel(self.root)
+        window.title(f"源码：{title}")
+        window.geometry("880x620")
+        text = tk.Text(window, wrap="none", font=("Consolas", 10))
+        text.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(window, orient="vertical", command=text.yview)
+        scroll.pack(side="right", fill="y")
+        text.configure(yscrollcommand=scroll.set)
+        text.insert("1.0", source)
+        text.configure(state="disabled")
+        window.transient(self.root)
+        window.grab_set()
+        self.root.wait_window(window)
+
+    def _rename_algorithm(self) -> None:
+        from tkinter import simpledialog
+
+        selected = self._selected_algorithm()
+        if selected is None or selected[1] != "已导入":
+            return
+        entry = read_registry(self.algorithms_dir).get(selected[0])
+        if entry is None:
+            return
+        new_name = simpledialog.askstring(
+            "重命名算法",
+            f"给「{entry.display_name}」起个新的显示名。\n\n"
+            f"标识 {entry.name} 不会变——别人发来的调校认的是标识。",
+            initialvalue=entry.display_name,
+            parent=self.root,
+        )
+        if new_name is None:
+            return
+        try:
+            rename(self.algorithms_dir, entry.name, new_name)
+        except LibraryError as error:
+            messagebox.showerror("改名失败", str(error), parent=self.root)
+            return
+        self._reload_algorithm_library()
+        self._refresh_library()
+        self._append_log(
+            f"算法「{entry.name}」的显示名已改为「{new_name.strip()}」。"
+        )
+
+    def _delete_algorithm(self) -> None:
+        selected = self._selected_algorithm()
+        if selected is None or selected[1] != "已导入":
+            return
+        entry = read_registry(self.algorithms_dir).get(selected[0])
+        if entry is None:
+            return
+        if not messagebox.askokcancel(
+            "删除算法",
+            f"要删掉「{entry.display_name}」吗？\n\n"
+            f"{entry.source_file} 会被删除。正指着它的控制方案会当场改回比例控制。",
+            parent=self.root,
+        ):
+            return
+        try:
+            uninstall(self.algorithms_dir, entry.name)
+        except LibraryError as error:
+            messagebox.showerror("删除失败", str(error), parent=self.root)
+            return
+        self._reload_algorithm_library()
+        self._refresh_library()
+        self._append_log(f"算法「{entry.display_name}」已删除。")
+
+    def _measurement_path(self) -> Path:
+        return self.config_path.parent / MEASUREMENT_NAME
+
+    def _export_tuning(self, profile: int) -> None:
+        try:
+            config = self._read_form()
+        except (ValueError, KeyError) as error:
+            messagebox.showerror("导出失败", f"设置里有填错的地方：{error}", parent=self.root)
+            return
+        target = filedialog.asksaveasfilename(
+            title=f"导出控制方案 {profile + 1} 的调校",
+            defaultextension=".json",
+            initialfile=f"tuning-{config.aim_profiles[profile].algorithm}.json",
+            filetypes=[("调校文件", "*.json")],
+            parent=self.root,
+        )
+        if not target:
+            return
+        text = dump_preset(
+            config.aim_profiles[profile],
+            measured_loop_ms=load_measurement(self._measurement_path()),
+        )
+        try:
+            Path(target).write_text(text, encoding="utf-8")
+        except OSError as error:
+            messagebox.showerror("导出失败", str(error), parent=self.root)
+            return
+        self._append_log(f"控制方案 {profile + 1} 的调校已导出到 {target}。")
+
+    def _import_tuning(self, profile: int) -> None:
+        source = filedialog.askopenfilename(
+            title=f"给控制方案 {profile + 1} 导入调校",
+            filetypes=[("调校文件", "*.json")],
+            parent=self.root,
+        )
+        if not source:
+            return
+        try:
+            text = Path(source).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            messagebox.showerror("导入失败", f"读不了这个文件：{error}", parent=self.root)
+            return
+        try:
+            preset = load_preset(text, known_algorithms=set(available_algorithms()))
+        except TuningError as error:
+            messagebox.showerror("导入失败", str(error), parent=self.root)
+            return
+
+        lines = [
+            f"要把控制方案 {profile + 1} 换成这份调校吗？",
+            "",
+            f"算法：{_display_value(algorithm_choices(), preset.algorithm)}",
+        ]
+        lines += [f"　{name} = {value:g}" for name, value in sorted(preset.params.items())]
+        lines += [
+            f"P 范围 {preset.kp_min:g} – {preset.kp_max:g}，增长斜率 {preset.kp_growth:g}",
+            f"视野半径 {preset.fov_radius:g}，框内位置 {preset.target_y_ratio * 100:.0f}%",
+        ]
+        warning = delay_warning(preset.measured_loop_ms, load_measurement(self._measurement_path()))
+        if warning:
+            lines += ["", "⚠ " + warning]
+        lines += ["", "触发键和目标标签不会被改动。"]
+        if not messagebox.askokcancel("导入调校", "\n".join(lines), parent=self.root):
+            return
+
+        self._apply_preset_to_form(profile, preset)
+        self._append_log(
+            f"控制方案 {profile + 1} 已套用 {Path(source).name}。点「保存设置」才会写进配置。"
+        )
+        if self.process is not None:
+            self._append_log("控制算法要停止后重新启动才会生效。")
+
+    def _apply_preset_to_form(self, profile: int, preset: TuningPreset) -> None:
+        # 顺序要紧: 先设算法, 再重建参数控件, 最后才填参数值。颠倒了参数会被打回默认。
+        self.profile_algorithm[profile].set(_display_value(algorithm_choices(), preset.algorithm))
+        self._rebuild_algorithm_params(profile)
+        for name, variable in self.profile_algorithm_params[profile].items():
+            if name in preset.params:
+                variable.set(preset.params[name])
+        for variables, texts, value in (
+            (self.profile_kp_min, self.profile_kp_min_text, preset.kp_min),
+            (self.profile_kp_max, self.profile_kp_max_text, preset.kp_max),
+            (self.profile_kp_growth, self.profile_kp_growth_text, preset.kp_growth),
+        ):
+            variables[profile].set(value)
+            texts[profile].set(f"{value:.3f}")
+        # 界面上这个滑块是百分比, 配置里是比例。
+        percent = preset.target_y_ratio * 100.0
+        self.profile_aim_position[profile].set(percent)
+        self.profile_aim_position_text[profile].set(f"{percent:.0f}%")
+        self.profile_fov[profile].set(preset.fov_radius)
+        self.profile_fov_text[profile].set(f"{preset.fov_radius:.0f}")
+        # kp 和视野是热更新的, 立刻推给正在跑的管线。
+        self._write_runtime_aim_settings()
 
     def _entry_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=6)
@@ -462,16 +969,18 @@ class RhodesFastGui:
             self.udp_panel.grid()
 
     def _browse_model(self) -> None:
+        current_path = _resolve_model_path(self.model_path.get().strip(), self.config_path.parent)
         selected = filedialog.askopenfilename(
             title="选择 ONNX 模型",
-            initialdir=str(Path(self.model_path.get()).parent),
+            initialdir=str(current_path.parent),
             filetypes=[("ONNX 模型", "*.onnx"), ("所有文件", "*.*")],
         )
         if selected:
-            self.model_path.set(selected)
+            self.model_path.set(_display_path(Path(selected), self.config_path.parent))
             self._inspect_selected_model(Path(selected))
 
     def _inspect_selected_model(self, path: Path) -> None:
+        path = _resolve_model_path(path, self.config_path.parent)
         self.model_contract = None
         self._update_target_class_choices()
         self._set_status("正在检查模型", "#175cd3", "#dbeafe")
@@ -483,7 +992,7 @@ class RhodesFastGui:
         ).start()
 
     def _model_path_edited(self, _event=None) -> None:
-        path = Path(self.model_path.get().strip())
+        path = _resolve_model_path(self.model_path.get().strip(), self.config_path.parent)
         if path.is_file():
             self._inspect_selected_model(path)
         else:
@@ -501,7 +1010,8 @@ class RhodesFastGui:
         self.messages.put(("model_contract", (path, contract)))
 
     def _apply_model_contract(self, path: Path, contract) -> None:
-        if Path(self.model_path.get()) != path:
+        selected_path = _resolve_model_path(self.model_path.get().strip(), self.config_path.parent)
+        if selected_path != path.resolve():
             return
         try:
             output_format = contract.output_format
@@ -522,7 +1032,7 @@ class RhodesFastGui:
     def _read_form(self) -> AppConfig:
         model = replace(
             self.config.model,
-            path=Path(self.model_path.get().strip()),
+            path=_resolve_model_path(self.model_path.get().strip(), self.config_path.parent),
             provider=PROVIDERS[self.provider.get()],
             cuda_graph=self.cuda_graph.get(),
             gpu_preprocess=self.gpu_preprocess.get(),
@@ -570,6 +1080,11 @@ class RhodesFastGui:
             target_class=int(self.profile_target_class[0].get()),
             target_y_ratio=max(0.0, min(1.0, self.profile_aim_position[0].get() / 100.0)),
             fov_radius=self.profile_fov[0].get(),
+            algorithm=algorithm_choices()[self.profile_algorithm[0].get()],
+            algorithm_params={
+                name: variable.get()
+                for name, variable in self.profile_algorithm_params[0].items()
+            },
         )
         profile_2 = replace(
             self.config.aim_profile_2,
@@ -581,6 +1096,11 @@ class RhodesFastGui:
             target_class=int(self.profile_target_class[1].get()),
             target_y_ratio=max(0.0, min(1.0, self.profile_aim_position[1].get() / 100.0)),
             fov_radius=self.profile_fov[1].get(),
+            algorithm=algorithm_choices()[self.profile_algorithm[1].get()],
+            algorithm_params={
+                name: variable.get()
+                for name, variable in self.profile_algorithm_params[1].items()
+            },
         )
         return replace(
             self.config,
@@ -750,7 +1270,10 @@ class RhodesFastGui:
                 self._apply_model_contract(path, contract)
             elif kind == "model_error":
                 path, error = payload
-                if Path(self.model_path.get()) == path:
+                selected_path = _resolve_model_path(
+                    self.model_path.get().strip(), self.config_path.parent
+                )
+                if selected_path == path.resolve():
                     self.model_contract = None
                     self._update_target_class_choices()
                     self._set_status("模型需检查", "#b42318", "#fee4e2")
@@ -921,19 +1444,29 @@ class RhodesFastGui:
     def _write_runtime_aim_settings(self) -> None:
         if self.process is None:
             return
-        profiles = [
-            {
-                "enabled": self.profile_enabled[index].get(),
-                "trigger": TRIGGERS[self.profile_trigger[index].get()],
-                "kp_min": self.profile_kp_min[index].get(),
-                "kp_max": self.profile_kp_max[index].get(),
-                "kp_growth": self.profile_kp_growth[index].get(),
-                "target_class": int(self.profile_target_class[index].get()),
-                "target_y_ratio": max(0.0, min(1.0, self.profile_aim_position[index].get() / 100.0)),
-                "fov_radius": self.profile_fov[index].get(),
-            }
-            for index in range(2)
-        ]
+        try:
+            profiles = [
+                {
+                    "enabled": self.profile_enabled[index].get(),
+                    "trigger": TRIGGERS[self.profile_trigger[index].get()],
+                    "kp_min": self.profile_kp_min[index].get(),
+                    "kp_max": self.profile_kp_max[index].get(),
+                    "kp_growth": self.profile_kp_growth[index].get(),
+                    "target_class": int(self.profile_target_class[index].get()),
+                    "target_y_ratio": max(0.0, min(1.0, self.profile_aim_position[index].get() / 100.0)),
+                    "fov_radius": self.profile_fov[index].get(),
+                    "algorithm": algorithm_choices()[self.profile_algorithm[index].get()],
+                    "algorithm_params": {
+                        name: variable.get()
+                        for name, variable in self.profile_algorithm_params[index].items()
+                    },
+                }
+                for index in range(2)
+            ]
+        except (tk.TclError, ValueError, KeyError):
+            # 参数框是可以手打的, 打到一半时里面可能是空的或者半个数字。这一下跳过,
+            # 下一次有效的编辑会把完整设置推过去。
+            return
         values = {
             # Top-level keys mirror profile 1 for older runtime consumers.
             "target_class": profiles[0]["target_class"],

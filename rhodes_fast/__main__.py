@@ -83,7 +83,9 @@ def main() -> None:
             return
         config = load_config(args.config)
         if args.check:
-            check_connections(config, args.stop_file)
+            check_connections(
+                config, args.stop_file, algorithms_dir=args.config.parent / "algorithms"
+            )
         elif args.benchmark is not None:
             benchmark_model(config, args.benchmark, args.stop_file)
         elif args.analyze:
@@ -105,6 +107,7 @@ def main() -> None:
                 preview_enable_file=args.preview_enable_file,
                 runtime_aim_file=args.runtime_aim_file,
                 latency_log=args.latency_log,
+                algorithms_dir=args.config.parent / "algorithms",
             )
     except Exception as exc:
         if args.gui:

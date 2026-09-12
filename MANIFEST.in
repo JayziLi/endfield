@@ -7,4 +7,5 @@ include requirements-*.txt
 recursive-include docs *.md *.png
 recursive-include rhodes_fast/ui/assets *.jpg
 prune models
-global-exclude *.onnx *.engine *.plan
+prune MODEL
+global-exclude *.onnx *.engine *.plan *.pt *.pth

@@ -45,6 +45,8 @@ def inspect_session(session, output_format_hint: str | None = None) -> ModelCont
         raise ValueError("The model does not expose a YOLO output")
     metadata = session.get_modelmeta().custom_metadata_map
     class_count = _class_count_from_metadata(metadata)
+    metadata_end2end = _metadata_flag(metadata.get("end2end"))
+    effective_format_hint = "end2end" if metadata_end2end else output_format_hint
     contracts: list[ModelContract] = []
     for index, output in enumerate(outputs):
         if len(output.shape) != 3:
@@ -53,14 +55,17 @@ def inspect_session(session, output_format_hint: str | None = None) -> ModelCont
             contract = infer_contract_from_shape(
                 tuple(output.shape),
                 class_count=class_count,
-                output_format_hint=output_format_hint,
+                output_format_hint=effective_format_hint,
             )
         except ValueError:
             continue
+        output_format = contract.output_format
+        if metadata_end2end and contract.feature_count >= 6:
+            output_format = "end2end"
         contracts.append(
             ModelContract(
                 contract.output_shape,
-                contract.output_format,
+                output_format,
                 contract.output_layout,
                 contract.class_count,
                 index,
@@ -69,7 +74,7 @@ def inspect_session(session, output_format_hint: str | None = None) -> ModelCont
     if not contracts:
         shapes = [output.shape for output in outputs]
         raise ValueError(f"No supported 3D YOLO output found among {shapes}")
-    return max(contracts, key=lambda contract: _contract_score(contract, output_format_hint))
+    return max(contracts, key=lambda contract: _contract_score(contract, effective_format_hint))
 
 
 def infer_contract_from_shape(
@@ -138,6 +143,10 @@ def _class_count_from_metadata(metadata: dict[str, str]) -> int | None:
     if isinstance(names, (dict, list, tuple)) and len(names) > 0:
         return len(names)
     return None
+
+
+def _metadata_flag(value: str | None) -> bool:
+    return value is not None and value.strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def infer_output_layout(

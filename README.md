@@ -10,6 +10,22 @@ Endfield 是一套面向 Windows 的本地实时视觉检测与移动控制工�
 
 ![Endfield 控制面板](docs/endfield-control-panel.png)
 
+## v1.1 移动算法库
+
+v1.1 把移动控制做成了可插拔算法。每套控制方案可以独立选择算法、实时切换和调参，不用停止推理管线。
+
+| 内置算法 | 适合场景 |
+| --- | --- |
+| 比例控制 `p` | 稳定、简单，保留原有手感 |
+| 比例 + 微分 `pd` | 抑制过冲 |
+| 速度前馈 `feedforward` | 对移动目标做延迟补偿，实机测试的推荐起点 |
+| 扣除在途 `inflight` / `inflight_ff` | 减少已发出但尚未反映到画面的重复位移 |
+| 前馈 + 风 / WindMouse / 前馈贝塞尔 | 追求更自然的弧线、速度和随机变化 |
+
+“算法库”页支持导入、查看源码、改名和删除第三方 `.py` 算法。导入时会先显示文件信息并让你确认；代码只在确认导入后执行。第三方 Python 代码没有沙箱，只安装你信任的来源。
+
+每套方案的算法参数可导出为 JSON 调校文件。导入别人的调校不会执行代码，也不会覆盖触发键和目标类别等本机习惯。
+
 ## 为什么适合放在副机上
 
 - **不排队，只处理最新帧**：接收线程与推理循环解耦，副机来不及时直接丢弃旧帧，不让延迟越积越高。
@@ -22,12 +38,13 @@ Endfield 是一套面向 Windows 的本地实时视觉检测与移动控制工�
 ## 移动算法为什么好调
 
 - 两套独立配置，可分别绑定左键、右键或两个侧键。
-- 每套配置拥有自己的目标类别、纵向落点、FOV 和动态 P 参数。
+- 每套配置拥有自己的算法、算法参数、目标类别、纵向落点、FOV 和动态 P 参数。
+- 算法和参数可在运行时热切换；界面根据算法自动生成对应调参项。
 - `kp_min` 控制目标附近的细腻度，`kp_max` 控制远距离追赶速度，`kp_growth` 控制增益增长快慢。
 - `deadzone` 抑制检测抖动，`smoothing` 控制跟手/平滑取舍，`max_step` 限制单帧最大位移。
 - 亚像素余量会跨帧累积，小幅移动不会因为整数取整而永久丢失。
-- 目标锁定带有切换迟滞，小幅置信度或距离波动不会在多个目标间来回跳。
-- 参数可在运行时应用；每次切换触发配置或关键参数变化时都会重置旧状态，避免残留位移。
+- 目标锁定带有切换迟滞和掉检滑行；大幅拉枪时关联半径还会按自身近期位移动态放宽，避免中途丢目标。
+- 切换目标会清掉旧算法状态，但保留已经发出的在途指令，减少交接时的过冲。
 
 ## 30 秒开始使用
 
@@ -87,7 +104,7 @@ python -m venv .venv
 - SHA-256：`04f0e55c26f58d17145b36045780fe1250d5bd2187543e11568e5141d05b3262`
 - 上游项目与权重遵循 [Ultralytics YOLOv5 的 AGPL-3.0 许可](https://github.com/ultralytics/yolov5/blob/master/LICENSE)
 
-默认模型**不会提交到本仓库**。`models/`、`*.onnx`、TensorRT 引擎缓存都已写入 `.gitignore`。仓库中也不包含作者的私人模型。
+默认模型**不会提交到本仓库**。`models/`、`MODEL/`、`*.onnx`、`*.pt`、`*.pth` 和 TensorRT 引擎缓存都已写入 `.gitignore`。仓库中也不包含作者的私人模型。
 
 换用自己的模型：
 
@@ -182,6 +199,8 @@ OBS WebSocket 截图方式最容易配置，但频繁请求截图的延迟通常
 - `settings.example.txt` / `config.example.toml`：可公开的完整示例。
 - `settings.txt` / `config.toml`：本机配置，已被 Git 忽略，首次启动自动创建。
 - `models/`：默认下载或用户自备模型，已被 Git 忽略。
+- `MODEL/` 与 `*.onnx` / `*.pt` / `*.pth`：本机模型和训练权重，已被 Git 忽略。
+- `algorithms/`：本机导入的第三方移动算法，已被 Git 忽略。
 - `.cache/`：TensorRT 引擎、GPU 预处理模型和测速结果，已被 Git 忽略。
 
 Endfield 本地运行，不会主动上传画面、模型或配置。网络流量只发送到你在 OBS/UDP/KMBox 中明确配置的地址。
@@ -231,4 +250,4 @@ python -m venv .venv
 
 ## English quick start
 
-Endfield is a local Windows application for low-latency YOLO inference on a secondary PC, with optional KMBox Net relative-motion output. Install Python 3.11–3.13, download the repository ZIP, and double-click `start.bat`. The first run creates an isolated environment, selects CPU or NVIDIA dependencies, downloads and verifies the official YOLOv5n ONNX model, and opens the GUI. Use `setup.bat cpu` or `setup.bat nvidia` to override hardware detection. Personal settings, ONNX models, and generated engine caches are never tracked by Git.
+Endfield is a local Windows application for low-latency YOLO inference on a secondary PC, with optional KMBox Net relative-motion output. v1.1 adds hot-switchable control algorithms, built-in P/PD/feedforward/in-flight/human-motion options, a user algorithm library, and shareable tuning presets. Install Python 3.11–3.13, download the repository ZIP, and double-click `start.bat`. The first run creates an isolated environment, selects CPU or NVIDIA dependencies, downloads and verifies the official YOLOv5n ONNX model, and opens the GUI. Use `setup.bat cpu` or `setup.bat nvidia` to override hardware detection. Personal settings, model weights, imported algorithms, and generated engine caches are never tracked by Git.

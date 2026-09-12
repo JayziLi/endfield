@@ -356,8 +356,8 @@ def decode_yolo(
     scale_x = frame_width / input_width
     scale_y = frame_height / input_height
     if output_format == "end2end":
-        if rows.shape[1] != 6:
-            raise ValueError(f"End-to-end YOLO output must have 6 columns, got {rows.shape}")
+        if rows.shape[1] < 6:
+            raise ValueError(f"End-to-end YOLO output must have at least 6 columns, got {rows.shape}")
         scores = rows[:, 4]
         keep = scores >= confidence_threshold
         if target_class is not None:
