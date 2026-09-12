@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import tempfile
 import unittest
 
 from rhodes_fast.gui import RhodesFastGui
@@ -20,11 +21,16 @@ class RuntimeHandoffTests(unittest.TestCase):
         self.app.root.update_idletasks()
         # _write_runtime_aim_settings 在没有管线时直接返回, 这里假装管线在跑。
         self.app.process = object()
+        self._runtime = tempfile.TemporaryDirectory()
+        self.app.runtime_aim_file = (
+            pathlib.Path(self._runtime.name) / "missing-cache" / "runtime.aim.json"
+        )
 
     def tearDown(self) -> None:
         self.app.process = None
         self.app.root.destroy()
         self.app.runtime_aim_file.unlink(missing_ok=True)
+        self._runtime.cleanup()
 
     def _written(self) -> list[dict]:
         return json.loads(self.app.runtime_aim_file.read_text(encoding="utf-8"))["profiles"]

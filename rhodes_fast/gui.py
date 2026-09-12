@@ -1474,6 +1474,7 @@ class RhodesFastGui:
             "fov_radius": profiles[0]["fov_radius"],
             "profiles": profiles,
         }
+        self.runtime_aim_file.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.runtime_aim_file.with_suffix(".tmp")
         try:
             temporary.write_text(json.dumps(values), encoding="utf-8")
