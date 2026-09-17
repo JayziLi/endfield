@@ -30,6 +30,7 @@ def main() -> None:
     parser.add_argument("--preview-port", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--preview-enable-file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--runtime-aim-file", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--trail-settings-file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--benchmark-output", type=Path, help="write the benchmark JSON report to this path")
     parser.add_argument(
@@ -108,6 +109,7 @@ def main() -> None:
                 runtime_aim_file=args.runtime_aim_file,
                 latency_log=args.latency_log,
                 algorithms_dir=args.config.parent / "algorithms",
+                trail_settings_file=args.trail_settings_file,
             )
     except Exception as exc:
         if args.gui:

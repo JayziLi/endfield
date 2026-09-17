@@ -10,6 +10,14 @@ Endfield 是一套面向 Windows 的本地实时视觉检测与移动控制工�
 
 ![Endfield 控制面板](docs/endfield-control-panel.png)
 
+## v1.2 预设、轨迹与弹道预测
+
+新增可导入的 **卡尔曼弹道预测**：从算法库导入 [`examples/kalman_projectile.py`](examples/kalman_projectile.py)，即可按毫秒调节额外提前量，并使用变向响应滑块及时间快捷按钮。它需要本版主程序提供的算法接口 v3。参见[安装与调节说明](docs/kalman-projectile-guide.zh-CN.md)。
+
+界面顶部的“预设”把界面上能改的设置存成一份快照：模型（含加速方式）、置信度/IoU、画面输入、KMBox 和两套控制方案。换游戏时从下拉框载入即可。支持保存、另存为和删除（删除前会再确认一次）；有改动没存进预设时名字后面会出现 `*`，切换前会先问是否保存。超时、缓冲区等界面上没有的高级项只留在 `settings.txt`。运行中不能载入预设，也不能更换模型。预设存放在程序目录的 `presets/` 下，里面含 KMBox UUID 和 OBS 密码，不要发给别人。
+
+“实时预览”页顶部有“画面”和“轨迹”两个勾选框，打开时只勾“画面”。勾上“轨迹”会在推流画面上叠加准心轨迹，用来直观比较不同算法；只勾“轨迹”则在黑底上只画准心轨迹，看得最清楚，也省掉预览所需的全类别检测。准心轨迹新的一端是黄色，越旧越接近灰色；实线是画面里已经走过的路径，虚线是已经发出、还没出现在画面上的那几帧。叠加在画面上时，灰色细线是目标瞄准点的轨迹。勾选“最优路径”会从这次开始瞄准的位置到目标画一条点线。轨迹长度可在 0.2～2 秒之间拖动，改动立即生效；勾选状态不保存，轨迹长度会记住。轨迹需要 KMBox：程序指令和手的移动（从 KMBox 监听口读取）都算在内，每计数对应多少像素、回路延迟几帧由运行时自动估算，画面左上角会显示估算结果，运行日志里也会打一行。估算在大量跟随、很少拉枪时会偏小一些；判断是否准确可以看拉枪打静止目标时，灰色目标轨迹是否收成一个点。第一次用建议先运行 `kmbox-monitor-check.bat`，确认监听口能读到手的移动、按键不会带出位移、来回推鼠标不会漂。
+
 ## v1.1 移动算法库
 
 v1.1 把移动控制做成了可插拔算法。每套控制方案可以独立选择算法、实时切换和调参，不用停止推理管线。
@@ -50,7 +58,7 @@ v1.1 把移动控制做成了可插拔算法。每套控制方案可以独立选
 
 ### 方式一：下载 ZIP（推荐给普通用户）
 
-1. 在仓库页面点击 **Code → Download ZIP**，解压到一个普通英文路径，例如 `D:\Endfield`。
+1. 从[最新发布页](https://github.com/JayziLi/endfield/releases/latest)下载 Windows ZIP，解压到一个普通英文路径，例如 `D:\Endfield`。
 2. 安装 [Python 3.11、3.12 或 3.13（Windows x64）](https://www.python.org/downloads/windows/)，安装时勾选 **Add Python to PATH**。
 3. 双击 `start.bat`。
 
@@ -250,4 +258,4 @@ python -m venv .venv
 
 ## English quick start
 
-Endfield is a local Windows application for low-latency YOLO inference on a secondary PC, with optional KMBox Net relative-motion output. v1.1 adds hot-switchable control algorithms, built-in P/PD/feedforward/in-flight/human-motion options, a user algorithm library, and shareable tuning presets. Install Python 3.11–3.13, download the repository ZIP, and double-click `start.bat`. The first run creates an isolated environment, selects CPU or NVIDIA dependencies, downloads and verifies the official YOLOv5n ONNX model, and opens the GUI. Use `setup.bat cpu` or `setup.bat nvidia` to override hardware detection. Personal settings, model weights, imported algorithms, and generated engine caches are never tracked by Git.
+Endfield is a local Windows application for low-latency YOLO inference on a secondary PC, with optional KMBox Net relative-motion output. v1.2 adds whole-game presets, a live aim-trail preview, and an importable Kalman projectile predictor to the hot-switchable motion-algorithm library. Install Python 3.11–3.13, download the latest Windows ZIP from Releases, and double-click `start.bat`. The first run creates an isolated environment, selects CPU or NVIDIA dependencies, downloads and verifies the official YOLOv5n ONNX model, and opens the GUI. Use `setup.bat cpu` or `setup.bat nvidia` to override hardware detection. Personal settings, model weights, imported algorithms, and generated engine caches are never tracked by Git.

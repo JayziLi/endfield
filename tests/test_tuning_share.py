@@ -6,10 +6,10 @@ import unittest
 from rhodes_fast.config import AimProfileConfig
 from rhodes_fast.tuning_share import (
     TuningError,
-    apply_preset,
+    apply_tuning,
     delay_warning,
-    dump_preset,
-    load_preset,
+    dump_tuning,
+    load_tuning,
 )
 
 
@@ -30,24 +30,24 @@ def _profile() -> AimProfileConfig:
 
 class DumpTests(unittest.TestCase):
     def test_round_trip_preserves_every_feel_setting(self) -> None:
-        preset = load_preset(dump_preset(_profile()))
-        self.assertEqual(preset.algorithm, "inflight_ff")
-        self.assertEqual(preset.params["loop_delay_frames"], 8.0)
-        self.assertAlmostEqual(preset.kp_max, 0.35)
-        self.assertAlmostEqual(preset.kp_growth, 0.031)
-        self.assertAlmostEqual(preset.target_y_ratio, 0.08)
-        self.assertAlmostEqual(preset.fov_radius, 150.0)
+        tuning = load_tuning(dump_tuning(_profile()))
+        self.assertEqual(tuning.algorithm, "inflight_ff")
+        self.assertEqual(tuning.params["loop_delay_frames"], 8.0)
+        self.assertAlmostEqual(tuning.kp_max, 0.35)
+        self.assertAlmostEqual(tuning.kp_growth, 0.031)
+        self.assertAlmostEqual(tuning.target_y_ratio, 0.08)
+        self.assertAlmostEqual(tuning.fov_radius, 150.0)
 
     def test_trigger_and_target_class_are_left_out_on_purpose(self) -> None:
         # 按键习惯因人而异, 目标标签取决于用哪个模型。
-        payload = json.loads(dump_preset(_profile()))
+        payload = json.loads(dump_tuning(_profile()))
         self.assertNotIn("trigger", payload)
         self.assertNotIn("target_class", payload)
         self.assertNotIn("enabled", payload)
 
     def test_measured_delay_is_included_only_when_known(self) -> None:
-        self.assertNotIn("measured_loop_ms", json.loads(dump_preset(_profile())))
-        payload = json.loads(dump_preset(_profile(), measured_loop_ms=33.3))
+        self.assertNotIn("measured_loop_ms", json.loads(dump_tuning(_profile())))
+        payload = json.loads(dump_tuning(_profile(), measured_loop_ms=33.3))
         self.assertAlmostEqual(payload["measured_loop_ms"], 33.3)
 
 
@@ -55,34 +55,34 @@ class LoadTests(unittest.TestCase):
     def test_unknown_format_version_is_an_error_not_a_guess(self) -> None:
         text = json.dumps({"format": 99, "algorithm": "p", "params": {}})
         with self.assertRaises(TuningError) as caught:
-            load_preset(text)
+            load_tuning(text)
         self.assertIn("99", str(caught.exception))
 
     def test_missing_algorithm_is_named_in_the_error(self) -> None:
         with self.assertRaises(TuningError) as caught:
-            load_preset(dump_preset(_profile()), known_algorithms={"p", "pd"})
+            load_tuning(dump_tuning(_profile()), known_algorithms={"p", "pd"})
         self.assertIn("inflight_ff", str(caught.exception))
 
     def test_a_known_algorithm_passes_the_same_check(self) -> None:
-        preset = load_preset(dump_preset(_profile()), known_algorithms={"p", "inflight_ff"})
-        self.assertEqual(preset.algorithm, "inflight_ff")
+        tuning = load_tuning(dump_tuning(_profile()), known_algorithms={"p", "inflight_ff"})
+        self.assertEqual(tuning.algorithm, "inflight_ff")
 
     def test_garbage_text_is_an_error_not_a_crash(self) -> None:
         with self.assertRaises(TuningError):
-            load_preset("this is not json")
+            load_tuning("this is not json")
 
     def test_a_missing_field_is_named(self) -> None:
-        payload = json.loads(dump_preset(_profile()))
+        payload = json.loads(dump_tuning(_profile()))
         del payload["kp_growth"]
         with self.assertRaises(TuningError) as caught:
-            load_preset(json.dumps(payload))
+            load_tuning(json.dumps(payload))
         self.assertIn("kp_growth", str(caught.exception))
 
     def test_a_non_numeric_value_is_rejected(self) -> None:
-        payload = json.loads(dump_preset(_profile()))
+        payload = json.loads(dump_tuning(_profile()))
         payload["kp_max"] = "很大"
         with self.assertRaises(TuningError):
-            load_preset(json.dumps(payload))
+            load_tuning(json.dumps(payload))
 
 
 class ApplyTests(unittest.TestCase):
@@ -90,7 +90,7 @@ class ApplyTests(unittest.TestCase):
         mine = AimProfileConfig(
             enabled=False, trigger="right", target_class=0, algorithm="p", algorithm_params={}
         )
-        updated = apply_preset(mine, load_preset(dump_preset(_profile())))
+        updated = apply_tuning(mine, load_tuning(dump_tuning(_profile())))
         self.assertEqual(updated.algorithm, "inflight_ff")
         self.assertAlmostEqual(updated.kp_max, 0.35)
         # 触发键、目标标签、启用状态是本机的事, 别人的文件不该动它们。

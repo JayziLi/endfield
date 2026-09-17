@@ -5,6 +5,7 @@ include *.example.toml
 include *.example.txt
 include requirements-*.txt
 recursive-include docs *.md *.png
+recursive-include examples *.py
 recursive-include rhodes_fast/ui/assets *.jpg
 prune models
 prune MODEL

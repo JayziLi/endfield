@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from collections import deque
 from dataclasses import replace
@@ -14,13 +15,14 @@ from .aim_algorithms import Observation, UnknownAlgorithm, create_algorithm, dyn
 from .config import AimConfig, AimProfileConfig, KmboxConfig
 from .detector import Detection
 
-# 在途指令窗口。算法最多回看自己的延迟参数那么多帧, 64 足够覆盖合理范围。
-_COMMAND_HISTORY = 64
+# Also covers time-based algorithms (up to 200 ms at high capture rates).
+_COMMAND_HISTORY = 512
 
 
 class _AimMotionState:
     def __init__(self) -> None:
         self.recent_commands: deque[tuple[int, int]] = deque(maxlen=_COMMAND_HISTORY)
+        self.recent_command_times: deque[float] = deque(maxlen=_COMMAND_HISTORY)
         self.reset()
 
     def reset(self, *, keep_commands: bool = False) -> None:
@@ -34,6 +36,38 @@ class _AimMotionState:
             # 在途指令记的是物理事实——已经发给鼠标、还没反映到画面上的那些位移。
             # 调参数不该把它抹掉: 抹掉的话「扣在途」会以为什么都没发, 当场多走一截。
             self.recent_commands.clear()
+            self.recent_command_times.clear()
+
+    def record_command(self, command: tuple[int, int], at: float) -> None:
+        self.recent_commands.append(command)
+        self.recent_command_times.append(at)
+
+
+class HandMotion:
+    """累加 KMBox 监听口报上来的物理鼠标位移。
+
+    库本身只保留最新一包, 不累加。监听线程每收到一包就回调一次, 主循环每帧取走一次,
+    两边不在同一个线程, 所以加锁。锁每帧只抢一次, 没有竞争时是百纳秒级。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._x = 0
+        self._y = 0
+
+    def on_report(self, state) -> None:
+        mouse = state.mouse
+        if mouse.x or mouse.y:
+            with self._lock:
+                self._x += mouse.x
+                self._y += mouse.y
+
+    def take(self) -> tuple[int, int]:
+        with self._lock:
+            moved = (self._x, self._y)
+            self._x = 0
+            self._y = 0
+        return moved
 
 
 class KmboxController:
@@ -71,9 +105,6 @@ class KmboxController:
             )
         )
         self._motion_states = [_AimMotionState(), _AimMotionState()]
-        self._trigger_down = [False, False]
-        self._press_order = [0, 0]
-        self._press_counter = 0
         self._active_profile_index: int | None = None
         self._runtime_mtime_ns: int | None = None
         self._next_runtime_check = 0.0
@@ -83,6 +114,7 @@ class KmboxController:
         # 运行中切算法时产生的消息, 由管线每帧取走打印。放在这里而不是直接 print,
         # 是为了让这个模块保持不做 I/O。
         self.algorithm_notices: list[str] = []
+        self.hand_motion = HandMotion()
         self._algorithms = [self._build_algorithm(profile) for profile in self._profiles]
 
     def _try_create(self, profile: AimProfileConfig):
@@ -140,6 +172,9 @@ class KmboxController:
                     timeout=self.device_config.timeout_seconds,
                 )
                 self._client.monitor_start(self.device_config.monitor_port)
+                monitor = getattr(self._client, "monitor", None)
+                if monitor is not None:
+                    monitor.add_callback(self.hand_motion.on_report)
                 return
             except (KMBoxError, OSError) as exc:
                 last_error = exc
@@ -154,6 +189,12 @@ class KmboxController:
         if self._client is not None:
             self._client.close()
             self._client = None
+        # 断开之前攒下的位移属于上一次连接, 不能算到重连之后的第一帧上。
+        self.hand_motion.take()
+
+    def take_hand_motion(self) -> tuple[int, int]:
+        """上次取走之后, 手在物理鼠标上移动了多少计数。主循环每帧取一次。"""
+        return self.hand_motion.take()
 
     def trigger_active(self) -> bool:
         self.refresh_runtime_settings()
@@ -243,8 +284,6 @@ class KmboxController:
                 self._switch_algorithm(index, new)
             # 在途指令留着: 那些位移物理上已经发给鼠标了。
             self._reset_profile(index, keep_commands=True)
-            self._trigger_down[index] = False
-            self._press_order[index] = 0
         self._profiles = profiles
         self._runtime_mtime_ns = modified
 
@@ -265,7 +304,10 @@ class KmboxController:
         for index in range(len(self._motion_states)):
             self._reset_profile(index, keep_commands=True)
 
-    def move_toward(self, target: Detection, frame_width: int, frame_height: int) -> tuple[int, int]:
+    def move_toward(
+        self, target: Detection, frame_width: int, frame_height: int,
+        *, observed_at: float | None = None,
+    ) -> tuple[int, int]:
         self.last_send_ms = 0.0
         if self._client is None:
             return (0, 0)
@@ -275,23 +317,44 @@ class KmboxController:
         error_x = target.center_x - frame_width * 0.5
         error_y = target.aim_y(profile.target_y_ratio) - frame_height * 0.5
         error_distance = math.hypot(error_x, error_y)
-        if error_distance <= self.aim_config.deadzone:
+        algorithm = self._algorithms[profile_index]
+        handles_deadzone = getattr(algorithm, "HANDLES_DEADZONE", False) is True
+        if error_distance <= self.aim_config.deadzone and not handles_deadzone:
             self._reset_profile(profile_index)
             return (0, 0)
         now = time.perf_counter()
+        sampled_at = observed_at if handles_deadzone and observed_at is not None else now
+        if not math.isfinite(sampled_at) or sampled_at > now:
+            sampled_at = now
+        # Repeated/out-of-order samples must not move a time-based controller.
+        if handles_deadzone and state.last_frame_at and sampled_at <= state.last_frame_at:
+            return (0, 0)
         observation = Observation(
             error_x=error_x,
             error_y=error_y,
-            dt=now - state.last_frame_at if state.last_frame_at else 0.0,
+            dt=sampled_at - state.last_frame_at if state.last_frame_at else 0.0,
             frame_index=state.frame_index,
             recent_commands=state.recent_commands,
             kp_min=profile.kp_min,
             kp_max=profile.kp_max,
             kp_growth=profile.kp_growth,
+            timestamp=sampled_at,
+            age=max(0.0, now - sampled_at),
+            recent_command_times=tuple(state.recent_command_times),
+            deadzone=self.aim_config.deadzone,
+            box=(target.x1, target.y1, target.x2, target.y2),
+            frame_width=frame_width,
+            frame_height=frame_height,
         )
-        state.last_frame_at = now
+        state.last_frame_at = sampled_at
         state.frame_index += 1
-        raw_x, raw_y = self._algorithms[profile_index].compute(observation)
+        raw_x, raw_y = algorithm.compute(observation)
+        if handles_deadzone and raw_x == 0.0 and raw_y == 0.0:
+            # Stop output without throwing away a predictor's target velocity.
+            state.smooth_x = state.smooth_y = 0.0
+            state.residual_x = state.residual_y = 0.0
+            state.record_command((0, 0), now)
+            return (0, 0)
         if raw_x * state.smooth_x < 0:
             state.smooth_x = 0.0
         if raw_y * state.smooth_y < 0:
@@ -302,7 +365,7 @@ class KmboxController:
         dx, state.residual_x = _axis_step(state.smooth_x, state.residual_x, self.aim_config.max_step)
         dy, state.residual_y = _axis_step(state.smooth_y, state.residual_y, self.aim_config.max_step)
         if dx == 0 and dy == 0:
-            state.recent_commands.append((0, 0))
+            state.record_command((0, 0), now)
             return (0, 0)
         move = self._client.enc_move if self.device_config.encrypted else self._client.move
         started = time.perf_counter()
@@ -310,11 +373,11 @@ class KmboxController:
             move(dx, dy)
         except (KMBoxError, OSError):
             # 指令没发出去就记 (0, 0): 记成发了会让「扣在途」减掉一段根本没发生的位移。
-            state.recent_commands.append((0, 0))
+            state.record_command((0, 0), started)
             return (0, 0)
         finally:
             self.last_send_ms = (time.perf_counter() - started) * 1000.0
-        state.recent_commands.append((dx, dy))
+        state.record_command((dx, dy), started)
         return (dx, dy)
 
     def _resolve_active_profile(self) -> int | None:
@@ -332,14 +395,10 @@ class KmboxController:
             # KMBox 超时只有 20ms, 进程被系统丢进效率模式后很容易撞上。
             self.trigger_errors += 1
             down = [False for _ in self._profiles]
-        rising = [index for index, value in enumerate(down) if value and not self._trigger_down[index]]
-        if rising:
-            self._press_counter += 1
-            for index in rising:
-                self._press_order[index] = self._press_counter
-        self._trigger_down = down
+        # 两个触发键一起按住时方案 1 优先: 两套方案常常一个负责跟枪、一个负责压枪,
+        # 按下去的先后顺序在实战里记不住, 固定优先级才是可预期的。
         candidates = [index for index, value in enumerate(down) if value]
-        selected = max(candidates, key=lambda index: (self._press_order[index], -index)) if candidates else None
+        selected = min(candidates) if candidates else None
         self._set_active_profile(selected)
         return selected
 

@@ -34,6 +34,27 @@ class PreviewTests(unittest.TestCase):
         self.assertGreater(np.count_nonzero(rendered), 0)
         self.assertEqual(np.count_nonzero(frame), 0)
 
+    def test_selected_target_label_shows_its_box_height(self) -> None:
+        # The projectile predictor's reference box height is read off this label.
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        target = Detection(40, 20, 100, 90, 0.87, 2)
+        other = Detection(110, 30, 150, 60, 0.5, 2)
+
+        with patch("rhodes_fast.preview.cv2.putText", wraps=cv2.putText) as put_text:
+            render_preview(
+                frame,
+                [target, other],
+                target,
+                target_y_ratio=0.4,
+                fov_radius=50,
+                inference_ms=4.2,
+                detection_ms=4.8,
+            )
+
+        labels = [call.args[1] for call in put_text.call_args_list]
+        self.assertIn("ID 2  0.87  h70", labels)
+        self.assertIn("ID 2  0.50", labels)
+
     def test_publisher_sends_decodable_preview(self) -> None:
         receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         receiver.bind(("127.0.0.1", 0))

@@ -10,6 +10,10 @@ from typing import get_type_hints
 
 import tomli_w
 
+# 轨迹长度滑条的范围(秒)。
+TRAIL_MIN_SECONDS = 0.2
+TRAIL_MAX_SECONDS = 2.0
+
 
 @dataclass(frozen=True, slots=True)
 class InputConfig:
@@ -19,6 +23,11 @@ class InputConfig:
 @dataclass(frozen=True, slots=True)
 class UiConfig:
     language: str = "zh"
+    # 上次载入或保存的预设名, 空串 = 没用预设。只是个指针, 设置本身仍然存在这份文件里。
+    preset: str = ""
+    # 实时预览里的轨迹长度。是看的偏好, 不是一套游戏配置, 所以不进预设。
+    # 画面/轨迹/最优路径这几个勾选框不存: 每次打开都只勾「画面」。
+    trail_seconds: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,7 +125,11 @@ def load_config(path: str | Path, *, validate_model: bool = True) -> AppConfig:
     raw = _read_config(config_path)
 
     input_config = InputConfig(**raw.get("input", {}))
-    ui = UiConfig(**raw.get("ui", {}))
+    ui_raw = dict(raw.get("ui", {}))
+    # 上一个版本把轨迹的勾选状态也存了进来, 现在每次打开都重置, 读到就扔掉。
+    ui_raw.pop("trail_enabled", None)
+    ui_raw.pop("trail_optimal_path", None)
+    ui = UiConfig(**ui_raw)
     udp = UdpConfig(**raw.get("udp", {}))
     obs = ObsConfig(**raw["obs"])
     model_raw = dict(raw["model"])
@@ -175,6 +188,11 @@ def load_config(path: str | Path, *, validate_model: bool = True) -> AppConfig:
         raise ValueError(f"Unsupported input mode: {input_config.mode}")
     if ui.language not in {"zh", "en"}:
         raise ValueError(f"Unsupported runtime language: {ui.language}")
+    if not TRAIL_MIN_SECONDS <= ui.trail_seconds <= TRAIL_MAX_SECONDS:
+        # 手改 settings.txt 才会走到这里, GUI 的滑条出不了这个范围。
+        raise ValueError(
+            f"Trail length must be between {TRAIL_MIN_SECONDS} and {TRAIL_MAX_SECONDS} seconds"
+        )
     if not 1 <= udp.port <= 65535:
         raise ValueError("UDP port must be between 1 and 65535")
     if udp.width <= 0 or udp.height <= 0:

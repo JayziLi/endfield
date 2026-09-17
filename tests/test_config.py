@@ -233,6 +233,58 @@ class ConfigTests(unittest.TestCase):
                     {"loop_delay_frames": 8.0, "gain": 1.0},
                 )
 
+    def test_the_last_used_preset_round_trips_through_both_formats(self) -> None:
+        # 井号、分号、等号、百分号在 INI 里都有特殊含义的前科, 名字里允许出现。
+        name = "Apex 高敏 #1; a=b 100%"
+        for source in (_TEXT_CONFIG, _TOML_CONFIG):
+            with self.subTest(source=source.name):
+                original = load_config(source, validate_model=False)
+                self.assertEqual(original.ui.preset, "")
+                changed = replace(original, ui=replace(original.ui, preset=name))
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / source.name
+                    save_config(changed, path)
+                    loaded = load_config(path, validate_model=False)
+                self.assertEqual(loaded.ui.preset, name)
+
+    def test_the_trail_length_round_trips_through_both_formats(self) -> None:
+        for source in (_TEXT_CONFIG, _TOML_CONFIG):
+            with self.subTest(source=source.name):
+                original = load_config(source, validate_model=False)
+                self.assertEqual(original.ui.trail_seconds, 0.5)
+                changed = replace(original, ui=replace(original.ui, trail_seconds=1.3))
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / source.name
+                    save_config(changed, path)
+                    loaded = load_config(path, validate_model=False)
+                self.assertEqual(loaded.ui.trail_seconds, 1.3)
+
+    def test_the_trail_checkboxes_are_not_remembered(self) -> None:
+        # 打开程序时总是只勾「画面」, 所以勾选状态不存。上一个版本存过这两个键,
+        # 那样写出来的文件必须照常能读。
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.txt"
+            text = _TEXT_CONFIG.read_text(encoding="utf-8")
+            text = text.replace("[ui]\n", "[ui]\ntrail_enabled = True\ntrail_optimal_path = True\n", 1)
+            self.assertIn("trail_enabled = True", text)
+            path.write_text(text, encoding="utf-8")
+
+            loaded = load_config(path, validate_model=False)
+            save_config(loaded, path)
+            saved = path.read_text(encoding="utf-8")
+
+        self.assertFalse(hasattr(loaded.ui, "trail_enabled"))
+        self.assertNotIn("trail_enabled", saved)
+        self.assertNotIn("trail_optimal_path", saved)
+
+    def test_a_trail_length_outside_the_slider_range_is_rejected(self) -> None:
+        original = load_config(_TEXT_CONFIG, validate_model=False)
+        for seconds in (0.1, 2.5):
+            with self.subTest(seconds=seconds), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "settings.txt"
+                with self.assertRaises(ValueError):
+                    save_config(replace(original, ui=replace(original.ui, trail_seconds=seconds)), path)
+
     def test_a_profile_without_an_algorithm_defaults_to_p(self) -> None:
         # 升级前写出的配置文件里没有这两个键, 必须当成现状算法而不是报错。
         self.assertEqual(AimProfileConfig().algorithm, "p")

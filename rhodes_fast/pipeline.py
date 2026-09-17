@@ -26,6 +26,7 @@ from .latency_log import (
 from .process_priority import keep_running_at_full_speed
 from .obs_source import ObsClient, ObsScreenshotSource
 from .preview import PreviewPublisher
+from .trail import Calibration, TrailOverlay, TrailRecorder
 from .udp_source import UdpSource
 
 
@@ -298,6 +299,7 @@ def run_pipeline(
     runtime_aim_file: Path | None = None,
     latency_log: Path | None = None,
     algorithms_dir: Path | None = None,
+    trail_settings_file: Path | None = None,
 ) -> None:
     configure_console_output()
 
@@ -333,8 +335,21 @@ def run_pipeline(
     target_selector = TargetSelector()
     motion_budget = 0.0
     source = create_source(config)
+    trail = TrailRecorder() if preview_port is not None else None
     preview = (
-        PreviewPublisher(preview_port, enabled_file=preview_enable_file)
+        PreviewPublisher(
+            preview_port,
+            enabled_file=preview_enable_file,
+            settings_file=trail_settings_file,
+            trail_overlay=TrailOverlay(
+                trail,
+                # 没有 KMBox 就没有移动数据, 标定永远不会成功。直接说清楚, 别让人等「标定中」。
+                available=config.kmbox.enabled,
+                on_calibrated=lambda calibration: print(
+                    _trail_calibrated_text(config, calibration), flush=True
+                ),
+            ),
+        )
         if preview_port is not None
         else None
     )
@@ -395,7 +410,8 @@ def run_pipeline(
                 for notice in controller.algorithm_notices:
                     print(notice, flush=True)
                 controller.algorithm_notices.clear()
-            show_all_classes = preview is not None and preview.due
+            # 只看轨迹时不画识别框, 全类别检测是白算。
+            show_all_classes = preview is not None and preview.due and preview.shows_frame
             detections = detector.detect(
                 snapshot.frame,
                 target_class=None if show_all_classes else controller.target_class,
@@ -417,7 +433,8 @@ def run_pipeline(
             trigger_active = controller.trigger_active()
             if target is not None and trigger_active:
                 movement = controller.move_toward(
-                    target, snapshot.frame.shape[1], snapshot.frame.shape[0]
+                    target, snapshot.frame.shape[1], snapshot.frame.shape[0],
+                    observed_at=snapshot.first_packet_at,
                 )
                 if movement != (0, 0):
                     moved += 1
@@ -428,6 +445,27 @@ def run_pipeline(
                 # 「扣在途」会以为什么都没发过, 当场多走一截。
                 controller.reset()
             motion_budget = next_motion_budget(motion_budget, movement)
+            frame_height, frame_width = snapshot.frame.shape[:2]
+            error = (
+                (
+                    target.center_x - frame_width * 0.5,
+                    target.aim_y(controller.target_y_ratio) - frame_height * 0.5,
+                )
+                if target is not None
+                else None
+            )
+            trail_row = None
+            if trail is not None:
+                # 每帧都记, 包括没按触发键的帧: 那时候手照样在动, 轨迹要画出来。
+                profile_number = controller.active_profile_number if trigger_active else None
+                trail_row = trail.record(
+                    time_s=processing_started,
+                    command=movement,
+                    hand=controller.take_hand_motion(),
+                    error=error,
+                    track=track_counter,
+                    profile=profile_number - 1 if profile_number else -1,
+                )
             completed_at = time.perf_counter()
             total_ms = max(0.0, (completed_at - snapshot.first_packet_at) * 1000.0)
             if latency_writer is not None:
@@ -440,17 +478,8 @@ def run_pipeline(
                     LatencySample(
                         monotonic_ms=processing_started * 1000.0,
                         sequence=snapshot.sequence,
-                        error_x=(
-                            target.center_x - snapshot.frame.shape[1] * 0.5
-                            if target is not None
-                            else 0.0
-                        ),
-                        error_y=(
-                            target.aim_y(controller.target_y_ratio)
-                            - snapshot.frame.shape[0] * 0.5
-                            if target is not None
-                            else 0.0
-                        ),
+                        error_x=error[0] if error is not None else 0.0,
+                        error_y=error[1] if error is not None else 0.0,
                         dx=movement[0],
                         dy=movement[1],
                         trigger=trigger_active,
@@ -500,6 +529,7 @@ def run_pipeline(
                     fov_radius=controller.fov_radius,
                     inference_ms=detector.last_inference_ms,
                     detection_ms=detector.last_detection_ms,
+                    trail_row=trail_row,
                 )
             frames += 1
 
@@ -551,6 +581,16 @@ def run_pipeline(
         if latency_writer is not None:
             latency_writer.close()
             print(_latency_report(config, latency_writer))
+
+
+def _trail_calibrated_text(config: AppConfig, calibration: Calibration) -> str:
+    echo_zh = "；监听口的数据里含程序发出的移动，已按不重复计算处理" if calibration.hand_includes_commands else ""
+    echo_en = "; the monitor data already contains the program's moves" if calibration.hand_includes_commands else ""
+    return _text(
+        config,
+        f"轨迹标定完成：每计数 {calibration.px_per_hand:.2f} 像素，回路延迟 {calibration.lag_frames} 帧{echo_zh}",
+        f"Trail calibrated: {calibration.px_per_hand:.2f} px per count, loop delay {calibration.lag_frames} frames{echo_en}",
+    )
 
 
 def compare_latency_logs(config: AppConfig, paths: list[Path]) -> str:

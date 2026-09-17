@@ -11,6 +11,7 @@ import numpy as np
 
 from .detector import Detection
 from .process_priority import run_current_thread_below_normal
+from .trail import TrailGeometry, TrailOverlay, TrailSettingsFile, draw_trail
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,8 @@ class _PreviewJob:
     fov_radius: float
     inference_ms: float
     detection_ms: float
+    # 这一帧在轨迹缓冲里的行号。轨迹要画到这一行为止, 而不是渲染时主循环已经写到的最新一行。
+    trail_row: int | None = None
 
 
 class PreviewPublisher:
@@ -33,7 +36,18 @@ class PreviewPublisher:
     新建的对象, 谁都不会回头改它们, 所以交出去不用拷贝。
     """
 
-    def __init__(self, port: int, max_fps: float = 30.0, enabled_file: Path | None = None):
+    def __init__(
+        self,
+        port: int,
+        max_fps: float = 30.0,
+        enabled_file: Path | None = None,
+        *,
+        trail_overlay: TrailOverlay | None = None,
+        settings_file: Path | None = None,
+    ):
+        self.trail_overlay = trail_overlay
+        # 只在预览线程里重读; 主循环只看 shows_frame, 不碰文件。
+        self._settings = TrailSettingsFile(settings_file)
         self.address = ("127.0.0.1", port)
         self.interval = 1.0 / max_fps
         self.next_frame_at = 0.0
@@ -60,6 +74,11 @@ class PreviewPublisher:
         return self.enabled and time.perf_counter() >= self.next_frame_at
 
     @property
+    def shows_frame(self) -> bool:
+        """预览要不要画推流画面。只看轨迹时, 主循环不用为识别框多做一次全类别检测。"""
+        return self._settings.settings.show_frame
+
+    @property
     def is_rendering(self) -> bool:
         worker = self._worker
         return worker is not None and worker.is_alive()
@@ -74,6 +93,7 @@ class PreviewPublisher:
         fov_radius: float,
         inference_ms: float,
         detection_ms: float,
+        trail_row: int | None = None,
     ) -> None:
         if not self.enabled:
             self.next_frame_at = 0.0
@@ -90,6 +110,7 @@ class PreviewPublisher:
             fov_radius,
             inference_ms,
             detection_ms,
+            trail_row,
         )
         with self._idle:
             if self._closed:
@@ -122,6 +143,15 @@ class PreviewPublisher:
             self._render_and_send(job)
 
     def _render_and_send(self, job: _PreviewJob) -> None:
+        settings = self._settings.current()
+        if not settings.show_frame and not settings.enabled:
+            return
+        trail, trail_status = None, ""
+        if self.trail_overlay is not None and job.trail_row is not None:
+            height, width = job.frame.shape[:2]
+            trail, trail_status = self.trail_overlay.prepare(
+                job.trail_row, (width * 0.5, height * 0.5), settings
+            )
         preview = render_preview(
             job.frame,
             job.detections,
@@ -130,6 +160,9 @@ class PreviewPublisher:
             fov_radius=job.fov_radius,
             inference_ms=job.inference_ms,
             detection_ms=job.detection_ms,
+            trail=trail,
+            trail_status=trail_status,
+            show_frame=settings.show_frame,
         )
         payload = _encode_datagram(preview)
         if payload is None:
@@ -160,10 +193,23 @@ def render_preview(
     fov_radius: float,
     inference_ms: float,
     detection_ms: float,
+    trail: TrailGeometry | None = None,
+    trail_status: str = "",
+    show_frame: bool = True,
 ) -> np.ndarray:
+    if not show_frame:
+        # 只看轨迹: 黑底上只有准心轨迹。画面、识别框、FOV 圈、目标轨迹一概不画。
+        canvas = np.zeros_like(frame)
+        if trail is not None:
+            draw_trail(canvas, trail, with_target=False)
+        _draw_trail_status(canvas, trail_status)
+        return canvas
     preview = frame.copy()
     height, width = preview.shape[:2]
     center = (width // 2, height // 2)
+    # 先画轨迹, 准心十字和识别框压在上面, 线再密也不挡住它们。
+    if trail is not None:
+        draw_trail(preview, trail)
     cv2.circle(preview, center, max(1, round(fov_radius)), (0, 210, 255), 1, cv2.LINE_AA)
     cv2.drawMarker(preview, center, (255, 255, 255), cv2.MARKER_CROSS, 12, 1, cv2.LINE_AA)
 
@@ -179,6 +225,9 @@ def render_preview(
         aim_point = (round(detection.center_x), round(detection.aim_y(target_y_ratio)))
         cv2.circle(preview, aim_point, 3 if selected else 2, color, -1, cv2.LINE_AA)
         label = f"ID {detection.class_id}  {detection.confidence:.2f}"
+        if selected:
+            # 卡尔曼弹道预测的「参考框高」就从这里读。
+            label += f"  h{round(detection.y2 - detection.y1)}"
         text_y = max(13, y1 - 4)
         cv2.putText(preview, label, (x1, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1, cv2.LINE_AA)
 
@@ -187,7 +236,17 @@ def render_preview(
     cv2.addWeighted(overlay, 0.72, preview, 0.28, 0, preview)
     status = f"infer {inference_ms:.1f} ms | total {detection_ms:.1f} ms | targets {len(detections)}"
     cv2.putText(preview, status, (7, height - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (240, 245, 250), 1, cv2.LINE_AA)
+    _draw_trail_status(preview, trail_status)
     return preview
+
+
+def _draw_trail_status(image: np.ndarray, text: str) -> None:
+    if not text:
+        return
+    # 底部状态栏在 320 宽的画面上已经写满了, 轨迹状态放左上角。先描一圈黑边,
+    # 画面亮的时候也看得清。
+    cv2.putText(image, text, (7, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(image, text, (7, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (240, 245, 250), 1, cv2.LINE_AA)
 
 
 def _encode_datagram(frame: np.ndarray) -> bytes | None:

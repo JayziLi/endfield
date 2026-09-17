@@ -60,6 +60,31 @@ class KmboxControllerTests(unittest.TestCase):
         self.assertEqual(moved, (10, -1))
         client.enc_move.assert_called_once_with(10, -1)
 
+    def test_algorithm_sees_the_target_box_and_frame_size(self) -> None:
+        # Box height is the only distance cue a 2D detector gives the algorithm.
+        seen = []
+
+        class Recorder:
+            def reset(self) -> None:
+                return None
+
+            def compute(self, observation):
+                seen.append(observation)
+                return 0.0, 0.0
+
+        controller = KmboxController(
+            KmboxConfig(uuid="00000000"),
+            AimConfig(smoothing=1.0, deadzone=0),
+            profiles=_profiles(AimProfileConfig()),
+        )
+        controller._algorithms[0] = Recorder()
+        controller._client = Mock()
+
+        controller.move_toward(Detection(200, 100, 240, 180, 0.9, 0), 320, 240)
+
+        self.assertEqual(seen[0].box, (200, 100, 240, 180))
+        self.assertEqual((seen[0].frame_width, seen[0].frame_height), (320, 240))
+
     def test_error_inside_deadzone_does_not_move(self) -> None:
         controller = KmboxController(
             KmboxConfig(uuid="00000000"),
@@ -312,7 +337,7 @@ class KmboxControllerTests(unittest.TestCase):
         client.isdown_right.assert_not_called()
         client.isdown_left.assert_not_called()
 
-    def test_last_pressed_profile_wins_and_release_falls_back(self) -> None:
+    def test_profile_one_wins_while_both_triggers_are_down(self) -> None:
         controller = KmboxController(
             KmboxConfig(uuid="00000000"),
             AimConfig(),
@@ -329,11 +354,18 @@ class KmboxControllerTests(unittest.TestCase):
         self.assertTrue(controller.trigger_active())
         self.assertEqual(controller.active_profile_number, 1)
 
+        # 方案 1 按着不放, 再按下方案 2 不抢控制权。
         client.isdown_left.return_value = 1
+        self.assertTrue(controller.trigger_active())
+        self.assertEqual(controller.active_profile_number, 1)
+
+        # 松开方案 1, 交给仍然按住的方案 2。
+        client.isdown_right.return_value = 0
         self.assertTrue(controller.trigger_active())
         self.assertEqual(controller.active_profile_number, 2)
 
-        client.isdown_left.return_value = 0
+        # 方案 2 还按着, 这时按下方案 1 要立刻抢回来。
+        client.isdown_right.return_value = 1
         self.assertTrue(controller.trigger_active())
         self.assertEqual(controller.active_profile_number, 1)
 
@@ -356,6 +388,7 @@ class KmboxControllerTests(unittest.TestCase):
         self.assertTrue(controller.trigger_active())
         self.assertEqual(controller.move_toward(target, 320, 320), (5, 0))
 
+        client.isdown_right.return_value = 0
         client.isdown_left.return_value = 1
         self.assertTrue(controller.trigger_active())
         self.assertEqual(controller.active_profile_number, 2)

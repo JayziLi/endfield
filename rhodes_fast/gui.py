@@ -11,7 +11,7 @@ import time
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import cv2
 import numpy as np
@@ -28,10 +28,31 @@ from .algorithm_library import (
     rename,
     uninstall,
 )
-from .config import AppConfig, load_config, save_config
+from .config import TRAIL_MAX_SECONDS, TRAIL_MIN_SECONDS, AppConfig, load_config, save_config
 from .latency_log import MEASUREMENT_NAME, load_measurement
-from .tuning_share import TuningError, TuningPreset, delay_warning, dump_preset, load_preset
+from .presets import (
+    DIRECTORY_NAME as PRESETS_DIRECTORY,
+    Preset,
+    PresetError,
+    delete_preset,
+    find_preset,
+    list_presets,
+    preset_from_config,
+    read_preset,
+    same_settings,
+    validate_name,
+    write_preset,
+)
+from .trail import TrailSettings, write_trail_settings
+from .tuning_share import Tuning, TuningError, delay_warning, dump_tuning, load_tuning
 
+
+# 下拉框里显示「有改动没存进预设」的节拍。只读一遍表单, 300 毫秒足够跟手又不占事。
+PRESET_POLL_MS = 300
+NO_PRESET = "（未选择预设）"
+# 停手这么久之后才把轨迹长度写回 settings.txt。
+TRAIL_PERSIST_DELAY_MS = 400
+NOTHING_TO_PREVIEW = "勾选「画面」或「轨迹」后在这里显示"
 
 INPUT_MODES = {
     "UDP 视频流 (MPEG-TS/H.264)": "udp_video",
@@ -124,15 +145,23 @@ class RhodesFastGui:
         self.stop_file = self.config_path.parent / ".cache" / f"gui-{os.getpid()}.stop"
         self.preview_enable_file = self.config_path.parent / ".cache" / f"gui-{os.getpid()}.preview"
         self.runtime_aim_file = self.config_path.parent / ".cache" / f"gui-{os.getpid()}.aim.json"
+        self.trail_settings_file = self.config_path.parent / ".cache" / f"gui-{os.getpid()}.trail.json"
+        self._trail_persist_job: str | None = None
         self.messages: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.presets_dir = self.config_path.parent / PRESETS_DIRECTORY
+        self.current_preset: str | None = None
+        # 预设文件里存的那份, 表单和它比才知道有没有改动。
+        self._preset_baseline: Preset | None = None
         self._build_style()
         self._create_variables()
         self._build_ui()
         self._switch_input_panel()
+        self._restore_last_preset()
         if self.config.model.path.is_file():
             self.root.after(120, lambda: self._inspect_selected_model(self.config.model.path))
         self.root.after(80, self._drain_messages)
         self.root.after(PREVIEW_POLL_MS, self._drain_preview)
+        self.root.after(PRESET_POLL_MS, self._watch_preset)
 
     def run(self) -> None:
         self.root.mainloop()
@@ -182,6 +211,12 @@ class RhodesFastGui:
         self.obs_source = tk.StringVar(value=cfg.obs.source_name)
         self.kmbox_enabled = tk.BooleanVar(value=cfg.kmbox.enabled)
         self.latency_log_enabled = tk.BooleanVar(value=False)
+        # 预览页的勾选框每次打开都是「只看画面」, 不从设置里恢复; 只有轨迹长度记住。
+        defaults = TrailSettings()
+        self.preview_frame = tk.BooleanVar(value=defaults.show_frame)
+        self.trail_enabled = tk.BooleanVar(value=defaults.enabled)
+        self.trail_optimal_path = tk.BooleanVar(value=defaults.optimal_path)
+        self.trail_seconds = tk.DoubleVar(value=cfg.ui.trail_seconds)
         self.kmbox_host = tk.StringVar(value=cfg.kmbox.host)
         self.kmbox_port = tk.StringVar(value=str(cfg.kmbox.port))
         self.kmbox_uuid = tk.StringVar(value=cfg.kmbox.uuid)
@@ -220,6 +255,7 @@ class RhodesFastGui:
             for profile in cfg.aim_profiles
         ]
         self._last_profile_triggers = [variable.get() for variable in self.profile_trigger]
+        self.preset_choice = tk.StringVar(value=NO_PRESET)
         self.status = tk.StringVar(value="已就绪")
 
     def _build_ui(self) -> None:
@@ -244,6 +280,20 @@ class RhodesFastGui:
         self.stop_button.pack(side="right", padx=(8, 8))
         self.status_badge.pack(side="right")
 
+        # 预设横跨两个页签(模型在「运行设置」, 算法在「识别与控制」), 所以放在页签外面。
+        preset_bar = ttk.Frame(root)
+        preset_bar.pack(fill="x", pady=(0, 10))
+        ttk.Label(preset_bar, text="预设").pack(side="left", padx=(0, 8))
+        self.preset_combo = ttk.Combobox(
+            preset_bar, textvariable=self.preset_choice, state="readonly", width=30
+        )
+        self.preset_combo.pack(side="left")
+        self.preset_combo.bind("<<ComboboxSelected>>", self._preset_selected)
+        ttk.Button(preset_bar, text="保存", command=self._save_preset).pack(side="left", padx=(8, 0))
+        ttk.Button(preset_bar, text="另存为…", command=self._save_preset_as).pack(side="left", padx=(8, 0))
+        self.delete_preset_button = ttk.Button(preset_bar, text="删除", command=self._delete_preset)
+        self.delete_preset_button.pack(side="left", padx=(8, 0))
+
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill="both", expand=True)
         run_tab = ttk.Frame(self.notebook, padding=8)
@@ -254,6 +304,31 @@ class RhodesFastGui:
         self.notebook.add(advanced_tab, text="识别与控制")
         self.notebook.add(library_tab, text="算法库")
         self.notebook.add(self.preview_tab, text="实时预览")
+
+        trail_bar = ttk.Frame(self.preview_tab)
+        trail_bar.pack(fill="x", pady=(0, 6))
+        ttk.Checkbutton(trail_bar, text="画面", variable=self.preview_frame).pack(side="left")
+        ttk.Checkbutton(trail_bar, text="轨迹", variable=self.trail_enabled).pack(side="left", padx=(12, 0))
+        self.trail_optimal_check = ttk.Checkbutton(
+            trail_bar, text="最优路径", variable=self.trail_optimal_path
+        )
+        self.trail_optimal_check.pack(side="left", padx=(12, 0))
+        ttk.Label(trail_bar, text="轨迹长度").pack(side="left", padx=(18, 6))
+        self.trail_seconds_scale = ttk.Scale(
+            trail_bar,
+            from_=TRAIL_MIN_SECONDS,
+            to=TRAIL_MAX_SECONDS,
+            variable=self.trail_seconds,
+            length=200,
+        )
+        self.trail_seconds_scale.pack(side="left")
+        self.trail_seconds_label = ttk.Label(trail_bar, width=6)
+        self.trail_seconds_label.pack(side="left", padx=(6, 0))
+        for variable in (self.preview_frame, self.trail_enabled, self.trail_optimal_path):
+            variable.trace_add("write", self._trail_view_changed)
+        self.trail_seconds.trace_add("write", self._trail_seconds_changed)
+        self._show_trail_seconds()
+        self._sync_trail_controls()
 
         self.preview_canvas = tk.Canvas(
             self.preview_tab,
@@ -270,11 +345,12 @@ class RhodesFastGui:
         model_box.pack(fill="x", pady=(0, 6))
         model_box.columnconfigure(1, weight=1)
         ttk.Label(model_box, text="ONNX 模型").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=5)
-        model_entry = ttk.Entry(model_box, textvariable=self.model_path)
-        model_entry.grid(row=0, column=1, sticky="ew", pady=5)
-        model_entry.bind("<Return>", self._model_path_edited)
-        model_entry.bind("<FocusOut>", self._model_path_edited)
-        ttk.Button(model_box, text="浏览...", command=self._browse_model).grid(row=0, column=2, padx=(8, 0), pady=5)
+        self.model_entry = ttk.Entry(model_box, textvariable=self.model_path)
+        self.model_entry.grid(row=0, column=1, sticky="ew", pady=5)
+        self.model_entry.bind("<Return>", self._model_path_edited)
+        self.model_entry.bind("<FocusOut>", self._model_path_edited)
+        self.browse_model_button = ttk.Button(model_box, text="浏览...", command=self._browse_model)
+        self.browse_model_button.grid(row=0, column=2, padx=(8, 0), pady=5)
         ttk.Label(model_box, text="加速方式").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=5)
         self.provider_combo = ttk.Combobox(
             model_box, textvariable=self.provider, values=list(PROVIDERS), state="readonly", width=22
@@ -526,24 +602,63 @@ class RhodesFastGui:
             child.destroy()
         name = algorithm_choices()[self.profile_algorithm[profile].get()]
         variables: dict[str, tk.DoubleVar] = {}
-        for row, spec in enumerate(algorithm_param_specs(name)):
+        specs = algorithm_param_specs(name)
+        advanced = ttk.Frame(frame)
+        advanced.columnconfigure(1, weight=1)
+        rows = {False: 0, True: 0}
+        for spec in specs:
+            parent = advanced if spec.advanced else frame
+            row = rows[spec.advanced]
             # 换算法时沿用同名参数的当前值, 免得来回切就被打回默认。
             previous = self.profile_algorithm_params[profile].get(spec.name)
             variable = tk.DoubleVar(
                 value=previous.get() if previous is not None else spec.default
             )
             variables[spec.name] = variable
-            ttk.Label(frame, text=spec.label).grid(
+            ttk.Label(parent, text=spec.label).grid(
                 row=row, column=0, sticky="w", padx=(0, 12), pady=4
             )
             ttk.Spinbox(
-                frame,
+                parent,
                 textvariable=variable,
                 from_=spec.minimum,
                 to=spec.maximum,
-                increment=0.01,
+                increment=spec.step,
                 width=10,
             ).grid(row=row, column=1, sticky="w", pady=4)
+            if spec.slider:
+                ttk.Scale(
+                    parent, variable=variable, from_=spec.minimum, to=spec.maximum,
+                    orient="horizontal", length=160,
+                ).grid(row=row + 1, column=0, columnspan=2, sticky="ew")
+                row += 1
+            if spec.presets:
+                buttons = ttk.Frame(parent)
+                buttons.grid(row=row + 1, column=0, columnspan=2, sticky="w")
+                for value in spec.presets:
+                    ttk.Button(
+                        buttons, text=f"{value:g}", width=3,
+                        command=lambda v=value, target=variable: target.set(v),
+                    ).pack(side="left", padx=(0, 2))
+                row += 1
+            rows[spec.advanced] = row + 1
+        if any(spec.advanced for spec in specs):
+            toggle = ttk.Button(frame, text="高级参数 ▸")
+            toggle.grid(row=rows[False], column=0, columnspan=2, sticky="w", pady=(4, 0))
+            advanced.grid(row=rows[False] + 1, column=0, columnspan=2, sticky="ew")
+            advanced.grid_remove()
+
+            def toggle_advanced():
+                if advanced.winfo_manager():
+                    advanced.grid_remove()
+                    toggle.configure(text="高级参数 ▸")
+                else:
+                    advanced.grid()
+                    toggle.configure(text="高级参数 ▾")
+
+            toggle.configure(command=toggle_advanced)
+        else:
+            advanced.destroy()
         self.profile_algorithm_params[profile] = variables
         # 监听要在字典换上去之后再挂。挂早了, 重建途中触发的那一下会读到上一个
         # 算法的参数名, 把半份配置推给管线。
@@ -783,8 +898,6 @@ class RhodesFastGui:
         self.root.wait_window(window)
 
     def _rename_algorithm(self) -> None:
-        from tkinter import simpledialog
-
         selected = self._selected_algorithm()
         if selected is None or selected[1] != "已导入":
             return
@@ -852,7 +965,7 @@ class RhodesFastGui:
         )
         if not target:
             return
-        text = dump_preset(
+        text = dump_tuning(
             config.aim_profiles[profile],
             measured_loop_ms=load_measurement(self._measurement_path()),
         )
@@ -877,7 +990,7 @@ class RhodesFastGui:
             messagebox.showerror("导入失败", f"读不了这个文件：{error}", parent=self.root)
             return
         try:
-            preset = load_preset(text, known_algorithms=set(available_algorithms()))
+            tuning = load_tuning(text, known_algorithms=set(available_algorithms()))
         except TuningError as error:
             messagebox.showerror("导入失败", str(error), parent=self.root)
             return
@@ -885,49 +998,263 @@ class RhodesFastGui:
         lines = [
             f"要把控制方案 {profile + 1} 换成这份调校吗？",
             "",
-            f"算法：{_display_value(algorithm_choices(), preset.algorithm)}",
+            f"算法：{_display_value(algorithm_choices(), tuning.algorithm)}",
         ]
-        lines += [f"　{name} = {value:g}" for name, value in sorted(preset.params.items())]
+        lines += [f"　{name} = {value:g}" for name, value in sorted(tuning.params.items())]
         lines += [
-            f"P 范围 {preset.kp_min:g} – {preset.kp_max:g}，增长斜率 {preset.kp_growth:g}",
-            f"视野半径 {preset.fov_radius:g}，框内位置 {preset.target_y_ratio * 100:.0f}%",
+            f"P 范围 {tuning.kp_min:g} – {tuning.kp_max:g}，增长斜率 {tuning.kp_growth:g}",
+            f"视野半径 {tuning.fov_radius:g}，框内位置 {tuning.target_y_ratio * 100:.0f}%",
         ]
-        warning = delay_warning(preset.measured_loop_ms, load_measurement(self._measurement_path()))
+        warning = delay_warning(tuning.measured_loop_ms, load_measurement(self._measurement_path()))
         if warning:
             lines += ["", "⚠ " + warning]
         lines += ["", "触发键和目标标签不会被改动。"]
         if not messagebox.askokcancel("导入调校", "\n".join(lines), parent=self.root):
             return
 
-        self._apply_preset_to_form(profile, preset)
+        self._apply_tuning_to_form(profile, tuning)
         self._append_log(
             f"控制方案 {profile + 1} 已套用 {Path(source).name}。点「保存设置」才会写进配置。"
         )
         if self.process is not None:
             self._append_log("控制算法要停止后重新启动才会生效。")
 
-    def _apply_preset_to_form(self, profile: int, preset: TuningPreset) -> None:
+    def _apply_tuning_to_form(self, profile: int, tuning: Tuning) -> None:
         # 顺序要紧: 先设算法, 再重建参数控件, 最后才填参数值。颠倒了参数会被打回默认。
-        self.profile_algorithm[profile].set(_display_value(algorithm_choices(), preset.algorithm))
+        self.profile_algorithm[profile].set(_display_value(algorithm_choices(), tuning.algorithm))
         self._rebuild_algorithm_params(profile)
         for name, variable in self.profile_algorithm_params[profile].items():
-            if name in preset.params:
-                variable.set(preset.params[name])
+            if name in tuning.params:
+                variable.set(tuning.params[name])
         for variables, texts, value in (
-            (self.profile_kp_min, self.profile_kp_min_text, preset.kp_min),
-            (self.profile_kp_max, self.profile_kp_max_text, preset.kp_max),
-            (self.profile_kp_growth, self.profile_kp_growth_text, preset.kp_growth),
+            (self.profile_kp_min, self.profile_kp_min_text, tuning.kp_min),
+            (self.profile_kp_max, self.profile_kp_max_text, tuning.kp_max),
+            (self.profile_kp_growth, self.profile_kp_growth_text, tuning.kp_growth),
         ):
             variables[profile].set(value)
             texts[profile].set(f"{value:.3f}")
         # 界面上这个滑块是百分比, 配置里是比例。
-        percent = preset.target_y_ratio * 100.0
+        percent = tuning.target_y_ratio * 100.0
         self.profile_aim_position[profile].set(percent)
         self.profile_aim_position_text[profile].set(f"{percent:.0f}%")
-        self.profile_fov[profile].set(preset.fov_radius)
-        self.profile_fov_text[profile].set(f"{preset.fov_radius:.0f}")
+        self.profile_fov[profile].set(tuning.fov_radius)
+        self.profile_fov_text[profile].set(f"{tuning.fov_radius:.0f}")
         # kp 和视野是热更新的, 立刻推给正在跑的管线。
         self._write_runtime_aim_settings()
+
+    def _restore_last_preset(self) -> None:
+        # 上次的预设被删了就安静地忘掉, 那是用户自己删的, 不用提醒。
+        name = find_preset(self.presets_dir, self.config.ui.preset) if self.config.ui.preset else None
+        if name is not None:
+            try:
+                # 模型不在也照样读: 这里只拿来比较有没有改动, 不往表单里填。
+                self._preset_baseline = read_preset(
+                    self.presets_dir, name, base_directory=self.config_path.parent, require_model=False
+                )
+                self.current_preset = name
+            except PresetError as error:
+                self._append_log(f"上次用的预设「{name}」读不了：{error}")
+        self._refresh_preset_bar()
+
+    def _watch_preset(self) -> None:
+        self._refresh_preset_marker()
+        self.root.after(PRESET_POLL_MS, self._watch_preset)
+
+    def _preset_changed(self) -> bool | None:
+        """None = 表单这会儿读不出来(数字框打到一半)。"""
+        if self.current_preset is None or self._preset_baseline is None:
+            return False
+        try:
+            form = preset_from_config(self._read_form())
+        except (tk.TclError, ValueError, KeyError):
+            return None
+        return not same_settings(form, self._preset_baseline)
+
+    def _refresh_preset_bar(self) -> None:
+        self.preset_combo.configure(values=list_presets(self.presets_dir))
+        self.delete_preset_button.configure(state="normal" if self.current_preset else "disabled")
+        self._refresh_preset_marker()
+
+    def _refresh_preset_marker(self) -> None:
+        # 轮询而不是给每个控件挂监听: 以后加一个设置项不用记得来这里登记。
+        changed = self._preset_changed()
+        if changed is None:
+            return
+        if self.current_preset is None:
+            text = NO_PRESET
+        else:
+            text = f"{self.current_preset} *" if changed else self.current_preset
+        if self.preset_choice.get() != text:
+            self.preset_choice.set(text)
+
+    def _preset_selected(self, _event=None) -> None:
+        # 重选当前预设也照常载入: 有改动会先问, 选「否」就等于撤回改动。
+        self._load_preset(self.preset_choice.get())
+        # 取消或失败时把下拉框上的字改回当前预设。
+        self._refresh_preset_bar()
+
+    def _load_preset(self, name: str) -> bool:
+        if self.process is not None:
+            # 模型要重启才换得了, 手感却是热切换的: 一半生效一半没生效最难排查。
+            messagebox.showinfo("正在运行", "运行中不能载入预设，先停止再切换。", parent=self.root)
+            return False
+        if self._preset_changed() is not False:
+            answer = messagebox.askyesnocancel(
+                "切换预设",
+                f"预设「{self.current_preset}」有改动还没保存。\n\n"
+                "是：先存进这个预设再切换\n否：丢掉这些改动\n取消：留在当前预设",
+                parent=self.root,
+            )
+            if answer is None or (answer and not self._save_preset()):
+                return False
+        try:
+            preset = read_preset(
+                self.presets_dir,
+                name,
+                base_directory=self.config_path.parent,
+                known_algorithms=set(available_algorithms()),
+            )
+        except PresetError as error:
+            messagebox.showerror("载入预设失败", str(error), parent=self.root)
+            return False
+        self._fill_form(preset)
+        self.current_preset = name
+        self._preset_baseline = preset
+        # 顺手写进配置: 下次打开程序还是这个预设。
+        self._save(quiet=True)
+        self._refresh_preset_bar()
+        self._append_log(f"已载入预设「{name}」。")
+        return True
+
+    def _fill_form(self, preset: Preset) -> None:
+        model = preset.model
+        self.provider.set(_display_value(PROVIDERS, model.provider))
+        self.cuda_graph.set(model.cuda_graph)
+        self.gpu_preprocess.set(model.gpu_preprocess)
+        self._sync_cuda_graph_control()
+        self.output_format.set(_display_value(OUTPUT_FORMATS, model.output_format))
+        for variable, text, value in (
+            (self.confidence, self.confidence_text, model.confidence),
+            (self.iou, self.iou_text, model.iou),
+        ):
+            variable.set(value)
+            text.set(f"{value:.3f}")
+        previous_model = _resolve_model_path(self.model_path.get().strip(), self.config_path.parent)
+        self.model_path.set(_display_path(model.path, self.config_path.parent))
+        self.input_mode.set(_display_value(INPUT_MODES, preset.input.mode))
+        self._switch_input_panel()
+        for variable, value in (
+            (self.udp_host, preset.udp.host),
+            (self.udp_port, str(preset.udp.port)),
+            (self.udp_width, str(preset.udp.width)),
+            (self.udp_height, str(preset.udp.height)),
+            (self.obs_host, preset.obs.host),
+            (self.obs_port, str(preset.obs.port)),
+            (self.obs_password, preset.obs.password),
+            (self.obs_source, preset.obs.source_name),
+            (self.kmbox_host, preset.kmbox.host),
+            (self.kmbox_port, str(preset.kmbox.port)),
+            (self.kmbox_uuid, preset.kmbox.uuid),
+        ):
+            variable.set(value)
+        self.kmbox_enabled.set(preset.kmbox.enabled)
+        for index, profile in enumerate(preset.aim_profiles):
+            self.profile_enabled[index].set(profile.enabled)
+            self.profile_trigger[index].set(_display_value(TRIGGERS, profile.trigger))
+            self.profile_target_class[index].set(str(profile.target_class))
+            # 先清掉旧参数: 文件里没写的参数该用默认值, 不该沿用上一个预设留下的。
+            self.profile_algorithm_params[index] = {}
+            self._apply_tuning_to_form(
+                index,
+                Tuning(
+                    algorithm=profile.algorithm,
+                    params=dict(profile.algorithm_params),
+                    kp_min=profile.kp_min,
+                    kp_max=profile.kp_max,
+                    kp_growth=profile.kp_growth,
+                    target_y_ratio=profile.target_y_ratio,
+                    fov_radius=profile.fov_radius,
+                ),
+            )
+        # 触发键冲突时要退回「上一个合法值」, 这个值得跟着预设走。
+        self._last_profile_triggers = [variable.get() for variable in self.profile_trigger]
+        # 标签得等新模型的类别数出来再校验。拿旧模型的类别数去卡, 合法的标签会被悄悄改成 0。
+        if previous_model != model.path or self.model_contract is None:
+            self._inspect_selected_model(model.path)
+        else:
+            self._update_target_class_choices()
+
+    def _save_preset(self) -> bool:
+        if self.current_preset is None:
+            return self._save_preset_as()
+        return self._store_preset(self.current_preset)
+
+    def _save_preset_as(self) -> bool:
+        name = simpledialog.askstring(
+            "另存为预设",
+            "给现在这套设置起个名字：",
+            initialvalue=self.current_preset or "",
+            parent=self.root,
+        )
+        if name is None:
+            return False
+        try:
+            name = validate_name(name)
+        except PresetError as error:
+            messagebox.showerror("这个名字不能用", str(error), parent=self.root)
+            return False
+        existing = find_preset(self.presets_dir, name)
+        if (
+            existing is not None
+            and existing != self.current_preset
+            and not messagebox.askokcancel(
+                "覆盖预设",
+                f"已经有一个叫「{existing}」的预设了。\n\n要用现在的设置覆盖它吗？",
+                icon=messagebox.WARNING,
+                default=messagebox.CANCEL,
+                parent=self.root,
+            )
+        ):
+            return False
+        return self._store_preset(name)
+
+    def _store_preset(self, name: str) -> bool:
+        try:
+            preset = preset_from_config(self._read_form())
+            stored = write_preset(self.presets_dir, name, preset, base_directory=self.config_path.parent)
+        except (OSError, tk.TclError, ValueError, KeyError) as error:
+            messagebox.showerror("预设无法保存", str(error), parent=self.root)
+            return False
+        self.current_preset = stored
+        self._preset_baseline = preset
+        # 和载入一样顺手记住, 下次打开还是这个预设。
+        self._save(quiet=True)
+        self._refresh_preset_bar()
+        self._append_log(f"预设「{stored}」已保存。")
+        return True
+
+    def _delete_preset(self) -> None:
+        name = self.current_preset
+        if name is None:
+            return
+        if not messagebox.askokcancel(
+            "删除预设",
+            f"确定删除预设「{name}」吗？\n\n删除后找不回来。界面上现在的设置不会变。",
+            icon=messagebox.WARNING,
+            # 默认按钮是取消: 手滑按回车删不掉。
+            default=messagebox.CANCEL,
+            parent=self.root,
+        ):
+            return
+        try:
+            delete_preset(self.presets_dir, name)
+        except OSError as error:
+            messagebox.showerror("删除失败", str(error), parent=self.root)
+            return
+        self.current_preset = None
+        self._preset_baseline = None
+        self._refresh_preset_bar()
+        self._append_log(f"预设「{name}」已删除。")
 
     def _entry_row(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=6)
@@ -1102,10 +1429,16 @@ class RhodesFastGui:
                 for name, variable in self.profile_algorithm_params[1].items()
             },
         )
+        trail = self._current_trail_settings()
         return replace(
             self.config,
             input=replace(self.config.input, mode=INPUT_MODES[self.input_mode.get()]),
-            ui=replace(self.config.ui, language=LOG_LANGUAGES[self.log_language.get()]),
+            ui=replace(
+                self.config.ui,
+                language=LOG_LANGUAGES[self.log_language.get()],
+                preset=self.current_preset or "",
+                trail_seconds=trail.seconds,
+            ),
             udp=udp,
             obs=obs,
             model=model,
@@ -1127,6 +1460,80 @@ class RhodesFastGui:
             self._append_log("设置已保存。")
         return True
 
+    def _current_trail_settings(self) -> TrailSettings:
+        try:
+            seconds = float(self.trail_seconds.get())
+        except (tk.TclError, ValueError):
+            seconds = self.config.ui.trail_seconds
+        # 滑条是连续的, 存 0.1 秒一档: 设置文件里不该出现 1.2749 这种数。
+        seconds = round(min(TRAIL_MAX_SECONDS, max(TRAIL_MIN_SECONDS, seconds)) * 10) / 10
+        return TrailSettings(
+            show_frame=bool(self.preview_frame.get()),
+            enabled=bool(self.trail_enabled.get()),
+            seconds=seconds,
+            optimal_path=bool(self.trail_optimal_path.get()),
+        )
+
+    def _show_trail_seconds(self) -> None:
+        self.trail_seconds_label.configure(text=f"{self._current_trail_settings().seconds:.1f} 秒")
+
+    def _sync_trail_controls(self) -> None:
+        # 最优路径和轨迹长度只在看轨迹的时候才有意义。
+        state = ["!disabled"] if self.trail_enabled.get() else ["disabled"]
+        self.trail_optimal_check.state(state)
+        self.trail_seconds_scale.state(state)
+
+    def _trail_view_changed(self, *_args) -> None:
+        self._sync_trail_controls()
+        if self.process is not None:
+            self._write_trail_settings_file()
+        self._sync_preview_rendering()
+
+    def _trail_seconds_changed(self, *_args) -> None:
+        self._show_trail_seconds()
+        if self.process is not None:
+            self._write_trail_settings_file()
+        # 拖滑条每动一下就触发一次, 停手之后再写 settings.txt。
+        if self._trail_persist_job is not None:
+            self.root.after_cancel(self._trail_persist_job)
+        self._trail_persist_job = self.root.after(TRAIL_PERSIST_DELAY_MS, self._persist_trail_settings)
+
+    def _something_to_preview(self) -> bool:
+        return bool(self.preview_frame.get() or self.trail_enabled.get())
+
+    def _sync_preview_rendering(self) -> None:
+        """勾选框变了: 两个都不勾就让管线别再渲染预览, 勾回来再接着渲染。"""
+        if self.process is None or self.preview_socket is None or not self._preview_tab_selected():
+            return
+        if not self._something_to_preview():
+            self.preview_enable_file.unlink(missing_ok=True)
+            self._discard_preview_frames()
+            self._show_preview_message(NOTHING_TO_PREVIEW)
+        elif not self.preview_enable_file.exists():
+            self.preview_enable_file.touch()
+            self._show_preview_message("正在等待第一帧...")
+
+    def _write_trail_settings_file(self) -> None:
+        try:
+            write_trail_settings(self.trail_settings_file, self._current_trail_settings())
+        except OSError as exc:
+            self._append_log(f"轨迹设置没能传给运行中的程序：{exc}")
+
+    def _persist_trail_settings(self) -> None:
+        """只把轨迹长度写回 settings.txt。
+
+        不走 _save: 那会把表单上别的、用户还没决定保存的改动一起写进去。
+        """
+        self._trail_persist_job = None
+        values = {"trail_seconds": self._current_trail_settings().seconds}
+        try:
+            stored = load_config(self.config_path, validate_model=False)
+            save_config(replace(stored, ui=replace(stored.ui, **values)), self.config_path)
+        except (OSError, ValueError) as exc:
+            self._append_log(f"轨迹设置没能保存：{exc}")
+            return
+        self.config = replace(self.config, ui=replace(self.config.ui, **values))
+
     def _start(self) -> None:
         self._launch([], "正在启动")
 
@@ -1141,6 +1548,7 @@ class RhodesFastGui:
         self.stop_file.unlink(missing_ok=True)
         self.preview_enable_file.unlink(missing_ok=True)
         self.runtime_aim_file.unlink(missing_ok=True)
+        self.trail_settings_file.unlink(missing_ok=True)
         command = [
             str(python),
             "-u",
@@ -1161,7 +1569,10 @@ class RhodesFastGui:
             preview_socket.settimeout(0.25)
             command.extend(["--preview-port", str(preview_socket.getsockname()[1])])
             command.extend(["--preview-enable-file", str(self.preview_enable_file)])
-            if self._preview_tab_selected():
+            # 启动前就写好: 管线一开始读到的就是当前设置, 而不是默认值。
+            self._write_trail_settings_file()
+            command.extend(["--trail-settings-file", str(self.trail_settings_file)])
+            if self._preview_tab_selected() and self._something_to_preview():
                 self.preview_enable_file.touch()
             if self.latency_log_enabled.get():
                 stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -1189,6 +1600,7 @@ class RhodesFastGui:
                 preview_socket.close()
             self.preview_enable_file.unlink(missing_ok=True)
             self.runtime_aim_file.unlink(missing_ok=True)
+            self.trail_settings_file.unlink(missing_ok=True)
             self.process = None
             messagebox.showerror("无法启动", str(exc), parent=self.root)
             return
@@ -1196,7 +1608,9 @@ class RhodesFastGui:
         self._write_runtime_aim_settings()
         if preview_socket is not None:
             self._discard_preview_frames()
-            if self._preview_tab_selected():
+            if self._preview_tab_selected() and not self._something_to_preview():
+                self._show_preview_message(NOTHING_TO_PREVIEW)
+            elif self._preview_tab_selected():
                 self._show_preview_message("正在等待第一帧...")
             else:
                 self._show_preview_message("切换到此页后开始预览")
@@ -1283,6 +1697,7 @@ class RhodesFastGui:
                 self.process = None
                 self._close_preview_socket()
                 self.runtime_aim_file.unlink(missing_ok=True)
+                self.trail_settings_file.unlink(missing_ok=True)
                 self.stop_file.unlink(missing_ok=True)
                 stopped_normally = code == 0 or self.stop_requested
                 self._set_running(False, "已停止" if stopped_normally else "运行出错")
@@ -1290,7 +1705,8 @@ class RhodesFastGui:
         self.root.after(80, self._drain_messages)
 
     def _display_preview(self, frame: np.ndarray) -> None:
-        if not self._preview_tab_selected():
+        # 两个都不勾之后, 管线还在路上的最后几帧不能把提示文字盖掉。
+        if not self._preview_tab_selected() or not self._something_to_preview():
             return
         canvas_width = max(1, self.preview_canvas.winfo_width())
         canvas_height = max(1, self.preview_canvas.winfo_height())
@@ -1329,11 +1745,13 @@ class RhodesFastGui:
 
     def _on_tab_changed(self, _event=None) -> None:
         if self._preview_tab_selected():
-            if self.process is not None and self.preview_socket is not None:
+            if self.process is None or self.preview_socket is None:
+                self._show_preview_message("启动后将在这里显示识别画面")
+            elif not self._something_to_preview():
+                self._show_preview_message(NOTHING_TO_PREVIEW)
+            else:
                 self.preview_enable_file.touch()
                 self._show_preview_message("正在等待第一帧...")
-            else:
-                self._show_preview_message("启动后将在这里显示识别画面")
             return
         self.preview_enable_file.unlink(missing_ok=True)
         self._discard_preview_frames()
@@ -1370,7 +1788,8 @@ class RhodesFastGui:
         self._sync_cuda_graph_control()
 
     def _sync_cuda_graph_control(self) -> None:
-        state = "normal" if PROVIDERS[self.provider.get()] in {"auto", "tensorrt"} else "disabled"
+        usable = self.process is None and PROVIDERS[self.provider.get()] in {"auto", "tensorrt"}
+        state = "normal" if usable else "disabled"
         self.cuda_graph_check.configure(state=state)
         self.gpu_preprocess_check.configure(state=state)
 
@@ -1505,6 +1924,13 @@ class RhodesFastGui:
     def _set_running(self, running: bool, status: str) -> None:
         self.start_button.configure(state="disabled" if running else "normal")
         self.stop_button.configure(state="normal" if running else "disabled")
+        # 模型和加速方式只在启动时读一次, 运行中改了也不生效, 干脆锁住; 载入预设会换模型, 一起锁。
+        # 保存/另存为不锁: 边打边调好了, 正该当场存下来。
+        self.preset_combo.configure(state="disabled" if running else "readonly")
+        self.provider_combo.configure(state="disabled" if running else "readonly")
+        self.model_entry.configure(state="disabled" if running else "normal")
+        self.browse_model_button.configure(state="disabled" if running else "normal")
+        self._sync_cuda_graph_control()
         if running:
             self._set_status(status, "#175cd3", "#dbeafe")
         else:

@@ -28,3 +28,6 @@ latency-*.csv
 
 # 用户自己装的控制算法
 algorithms/
+
+# 用户自己存的预设（本机的整套配置快照）
+presets/

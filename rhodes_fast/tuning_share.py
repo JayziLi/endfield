@@ -24,7 +24,7 @@ class TuningError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class TuningPreset:
+class Tuning:
     algorithm: str
     params: dict[str, float]
     kp_min: float
@@ -35,7 +35,7 @@ class TuningPreset:
     measured_loop_ms: float | None = None
 
 
-def dump_preset(profile: AimProfileConfig, *, measured_loop_ms: float | None = None) -> str:
+def dump_tuning(profile: AimProfileConfig, *, measured_loop_ms: float | None = None) -> str:
     payload: dict[str, object] = {
         "format": FORMAT,
         "algorithm": profile.algorithm,
@@ -49,7 +49,7 @@ def dump_preset(profile: AimProfileConfig, *, measured_loop_ms: float | None = N
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 
-def load_preset(text: str, *, known_algorithms: Collection[str] | None = None) -> TuningPreset:
+def load_tuning(text: str, *, known_algorithms: Collection[str] | None = None) -> Tuning:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as error:
@@ -86,7 +86,7 @@ def load_preset(text: str, *, known_algorithms: Collection[str] | None = None) -
     if not isinstance(measured, (int, float)):
         measured = None
 
-    return TuningPreset(
+    return Tuning(
         algorithm=algorithm,
         params=params,
         measured_loop_ms=None if measured is None else float(measured),
@@ -94,7 +94,7 @@ def load_preset(text: str, *, known_algorithms: Collection[str] | None = None) -
     )
 
 
-def apply_preset(profile: AimProfileConfig, preset: TuningPreset) -> AimProfileConfig:
+def apply_tuning(profile: AimProfileConfig, tuning: Tuning) -> AimProfileConfig:
     """只覆盖手感那几项。
 
     trigger / target_class / enabled 是本机的习惯和本机用的模型决定的, 别人的
@@ -102,32 +102,32 @@ def apply_preset(profile: AimProfileConfig, preset: TuningPreset) -> AimProfileC
     """
     return replace(
         profile,
-        algorithm=preset.algorithm,
-        algorithm_params=dict(preset.params),
-        kp_min=preset.kp_min,
-        kp_max=preset.kp_max,
-        kp_growth=preset.kp_growth,
-        target_y_ratio=preset.target_y_ratio,
-        fov_radius=preset.fov_radius,
+        algorithm=tuning.algorithm,
+        algorithm_params=dict(tuning.params),
+        kp_min=tuning.kp_min,
+        kp_max=tuning.kp_max,
+        kp_growth=tuning.kp_growth,
+        target_y_ratio=tuning.target_y_ratio,
+        fov_radius=tuning.fov_radius,
     )
 
 
 def delay_warning(
-    preset_ms: float | None, local_ms: float | None, frame_interval_ms: float = 4.16
+    tuning_ms: float | None, local_ms: float | None, frame_interval_ms: float = 4.16
 ) -> str | None:
     """作者和本机的回路延迟差一帧以上就提醒。
 
     「扣在途」和「速度前馈」的补偿量是按作者那台机器的延迟调的。差一帧就够把
     补偿量从刚好变成过冲或不足。
     """
-    if preset_ms is None or local_ms is None:
+    if tuning_ms is None or local_ms is None:
         return None
-    gap = abs(preset_ms - local_ms)
+    gap = abs(tuning_ms - local_ms)
     if gap < frame_interval_ms:
         return None
     return (
-        f"作者机器的回路延迟是 {preset_ms:.1f} 毫秒，你这台是 {local_ms:.1f} 毫秒，"
+        f"作者机器的回路延迟是 {tuning_ms:.1f} 毫秒，你这台是 {local_ms:.1f} 毫秒，"
         f"差 {gap:.1f} 毫秒（约 {gap / frame_interval_ms:.1f} 帧）。"
         "扣在途和前馈的补偿量是按作者的延迟调的，套用后可能过冲或不足，"
-        "手感不对就先动 loop_delay_frames。"
+        "手感不对就先检查算法的控制回路延迟（帧或毫秒）。"
     )
