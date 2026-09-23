@@ -1,0 +1,37 @@
+/* ENDFIELD UI — spacing & layout. 4px base grid, dense desktop rhythm. */
+:root{
+  --space-0:0px;
+  --space-1:2px;
+  --space-2:4px;
+  --space-3:6px;
+  --space-4:8px;
+  --space-5:12px;
+  --space-6:16px;
+  --space-7:20px;
+  --space-8:24px;
+  --space-9:32px;
+  --space-10:40px;
+  --space-11:48px;
+  --space-12:64px;
+  --space-13:96px;
+
+  /* control geometry — measured off the spec sheets */
+  --control-h-sm:28px;
+  --control-h:36px;        /* inputs, selects, segmented, tabs */
+  --control-h-lg:44px;     /* primary action buttons */
+  --control-pad-x:12px;
+  --control-pad-x-lg:16px;
+
+  --field-label-w:112px;   /* label column in settings rows */
+  --panel-pad:16px;
+  --panel-pad-lg:24px;
+  --gutter:24px;
+  --rail-w:132px;          /* navigation rail */
+  --rail-w-collapsed:56px;
+  --titlebar-h:44px;
+  --statusbar-h:28px;
+
+  --accent-bar-w:4px;      /* the ink/signal bar at the left of buttons & titles */
+  --accent-bar-h:14px;
+  --stripe-w:2px;
+}

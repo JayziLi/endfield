@@ -3,7 +3,8 @@
 settings.txt 是「现在正在用的」, 预设是存起来的快照, 载入就是把快照填回界面。
 和 tuning_share 一样只搬数据, 不 import、不执行任何东西。
 
-存的是界面上能改的全部: 模型、画面输入、KMBox、两个控制方案。超时、缓冲区这些
+存的是界面上能改的全部: 模型、画面输入 (含本机屏幕)、移动输出 (KMBox / SendInput)、
+两个控制方案。超时、缓冲区这些
 界面上没有的高级项只留在 settings.txt, 不跟着预设来回换。
 
 文件里有 KMBox 的 UUID 和 OBS 密码, 所以它是本机的私人文件, 别当调校发给别人。
@@ -14,16 +15,21 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Collection
 
 from .config import (
+    DESKTOP_BACKEND_VALUES,
+    INPUT_MODE_VALUES,
+    MOUSE_OUTPUT_VALUES,
     AimProfileConfig,
     AppConfig,
+    DesktopConfig,
     InputConfig,
     KmboxConfig,
     ModelConfig,
+    MouseConfig,
     ObsConfig,
     UdpConfig,
     _validate_aim_profiles,
@@ -40,13 +46,15 @@ _RESERVED = frozenset(
 )
 _PROVIDERS = frozenset({"auto", "tensorrt", "cuda", "cpu"})
 _OUTPUT_FORMATS = frozenset({"yolov5", "yolov8", "end2end"})
-_INPUT_MODES = frozenset({"udp_video", "udp_jpeg", "obs_websocket"})
+_INPUT_MODES = INPUT_MODE_VALUES
 _PROFILE_NUMBERS = ("kp_min", "kp_max", "kp_growth", "target_y_ratio", "fov_radius")
 # 连接类设置里界面上能改的那几项。
 _WIRING_FIELDS = {
     "udp": ("host", "port", "width", "height"),
     "obs": ("host", "port", "password", "source_name"),
     "kmbox": ("enabled", "host", "port", "uuid"),
+    "desktop": ("backend", "monitor", "width", "height"),
+    "mouse": ("output",),
 }
 
 
@@ -64,6 +72,9 @@ class Preset:
     kmbox: KmboxConfig
     aim_profile_1: AimProfileConfig
     aim_profile_2: AimProfileConfig
+    # 单机模式之前存的预设没有这两节, 读进来按默认值 —— 所以这里也带默认值。
+    desktop: DesktopConfig = field(default_factory=DesktopConfig)
+    mouse: MouseConfig = field(default_factory=MouseConfig)
 
     @property
     def aim_profiles(self) -> tuple[AimProfileConfig, AimProfileConfig]:
@@ -79,6 +90,8 @@ def preset_from_config(config: AppConfig) -> Preset:
         kmbox=config.kmbox,
         aim_profile_1=config.aim_profile_1,
         aim_profile_2=config.aim_profile_2,
+        desktop=config.desktop,
+        mouse=config.mouse,
     )
 
 
@@ -171,6 +184,25 @@ def parse_preset(
         port=_port(raw_kmbox, "port", "kmbox"),
         uuid=_text(raw_kmbox, "uuid", "kmbox"),
     )
+    # 单机模式之前存的预设没有这两节。缺了按默认值, 不报错: 升级之后打不开存好
+    # 的预设, 等于把用户攒下的每一套游戏配置都作废了。有这一节就照常严格校验。
+    raw_desktop = _optional_section(payload, "desktop")
+    desktop = (
+        DesktopConfig()
+        if raw_desktop is None
+        else DesktopConfig(
+            backend=_member(raw_desktop, "backend", DESKTOP_BACKEND_VALUES, "desktop"),
+            monitor=_non_negative(raw_desktop, "monitor", "desktop"),
+            width=_positive(raw_desktop, "width", "desktop"),
+            height=_positive(raw_desktop, "height", "desktop"),
+        )
+    )
+    raw_mouse = _optional_section(payload, "mouse")
+    mouse = (
+        MouseConfig()
+        if raw_mouse is None
+        else MouseConfig(output=_member(raw_mouse, "output", MOUSE_OUTPUT_VALUES, "mouse"))
+    )
 
     raw_profiles = payload.get("aim_profiles")
     if not isinstance(raw_profiles, list) or len(raw_profiles) != 2:
@@ -190,6 +222,8 @@ def parse_preset(
         kmbox=kmbox,
         aim_profile_1=profiles[0],
         aim_profile_2=profiles[1],
+        desktop=desktop,
+        mouse=mouse,
     )
 
 
@@ -295,6 +329,13 @@ def _section(payload: dict, key: str) -> dict:
     return section
 
 
+def _optional_section(payload: dict, key: str) -> dict | None:
+    """缺了返回 None; 在但不是对象照样报错 —— 缺失是老版本, 形状不对是坏文件。"""
+    if key not in payload:
+        return None
+    return _section(payload, key)
+
+
 def _profile(raw: object, where: str, known_algorithms: Collection[str] | None) -> AimProfileConfig:
     if not isinstance(raw, dict):
         raise PresetError(f"{where} 必须是一个对象。")
@@ -340,6 +381,20 @@ def _positive(section: dict, key: str, where: str) -> int:
     value = section.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise PresetError(f"{where}.{key} 必须是正整数。")
+    return value
+
+
+def _non_negative(section: dict, key: str, where: str) -> int:
+    value = section.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise PresetError(f"{where}.{key} 必须是 0 或更大的整数。")
+    return value
+
+
+def _member(section: dict, key: str, allowed: frozenset[str], where: str) -> str:
+    value = section.get(key)
+    if value not in allowed:
+        raise PresetError(f"{where}.{key} 不认识：{value!r}。")
     return value
 
 

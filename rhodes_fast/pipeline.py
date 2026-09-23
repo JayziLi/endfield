@@ -15,6 +15,7 @@ from .config import AppConfig
 from .console import configure_console_output
 from .detector import Detection, YoloDetector
 from .kmbox_control import KmboxController
+from .local_mouse import RawMouseMonitor, check_local_mouse
 from .latency_log import (
     MEASUREMENT_NAME,
     LatencyLogWriter,
@@ -24,6 +25,7 @@ from .latency_log import (
     save_measurement,
 )
 from .process_priority import keep_running_at_full_speed
+from .desktop_source import BACKEND_NAMES, DesktopSource
 from .obs_source import ObsClient, ObsScreenshotSource
 from .preview import PreviewPublisher
 from .trail import Calibration, TrailOverlay, TrailRecorder
@@ -320,13 +322,16 @@ def run_pipeline(
     detector.warmup()
     print(_cuda_graph_status(config, detector))
     print(_gpu_preprocess_status(config, detector))
-    print(_text(config, "模型已就绪，正在连接画面输入和 KMBox...", "Model ready. Connecting input and KMBox..."))
+    print(
+        _text(config, "模型已就绪，正在连接画面输入和移动输出...", "Model ready. Connecting input and mouse output...")
+    )
     controller = KmboxController(
         config.kmbox,
         config.aim,
         runtime_aim_file,
         profiles=config.aim_profiles,
         reload_algorithms=reload_algorithm_library,
+        output=config.mouse.output,
     )
     warning_text = _algorithm_warning_text(config, controller.algorithm_warnings)
     if warning_text:
@@ -344,7 +349,8 @@ def run_pipeline(
             trail_overlay=TrailOverlay(
                 trail,
                 # 没有 KMBox 就没有移动数据, 标定永远不会成功。直接说清楚, 别让人等「标定中」。
-                available=config.kmbox.enabled,
+                # 手的移动: KMBox 从监听口读, SendInput 从 Raw Input 读。
+                available=config.mouse.output == "sendinput" or config.kmbox.enabled,
                 on_calibrated=lambda calibration: print(
                     _trail_calibrated_text(config, calibration), flush=True
                 ),
@@ -364,8 +370,8 @@ def run_pipeline(
     print(
         _text(
             config,
-            f"输入：{source_label(config)} | KMBox：{config.kmbox.host}:{config.kmbox.port}",
-            f"Input: {source_label(config)} | KMBox: {config.kmbox.host}:{config.kmbox.port}",
+            f"输入：{source_label(config)} | 移动：{output_label(config)}",
+            f"Input: {source_label(config)} | Output: {output_label(config)}",
         )
     )
 
@@ -792,6 +798,8 @@ def check_connections(
         finally:
             client.close()
     else:
+        desktop = config.input.mode == "desktop"
+        name_zh, name_en = ("本机屏幕", "Desktop") if desktop else ("UDP", "UDP")
         source = create_source(config)
         source.start()
         try:
@@ -805,24 +813,64 @@ def check_connections(
                 print(_text(config, "连接测试已停止。", "Connection check stopped."))
                 return
             if snapshot is None:
-                raise RuntimeError(source.error or "no UDP frame received within 3 seconds")
-            print(
-                _text(
-                    config,
-                    f"UDP 正常：画面={snapshot.frame.shape[1]}x{snapshot.frame.shape[0]}",
-                    f"UDP OK: frame={snapshot.frame.shape[1]}x{snapshot.frame.shape[0]}",
+                raise RuntimeError(
+                    source.error
+                    or ("no frame captured within 3 seconds" if desktop else "no UDP frame received within 3 seconds")
                 )
-            )
+            frame_size = f"{snapshot.frame.shape[1]}x{snapshot.frame.shape[0]}"
+            if desktop:
+                # 显示器分辨率一起打: 用户靠它确认选中的是不是想要的那块屏。
+                screen = source.screen_size
+                screen_size = f"{screen[0]}x{screen[1]}" if screen else "?"
+                backend = config.desktop.backend
+                print(
+                    _text(
+                        config,
+                        f"本机屏幕 正常：画面={frame_size} · 显示器={screen_size} · 后端={backend}",
+                        f"Desktop OK: frame={frame_size} · screen={screen_size} · backend={backend}",
+                    )
+                )
+            else:
+                print(_text(config, f"UDP 正常：画面={frame_size}", f"UDP OK: frame={frame_size}"))
         except Exception as exc:
-            failures.append(f"UDP: {exc}")
-            print(_text(config, f"UDP 连接失败：{exc}", f"UDP FAILED: {exc}"))
+            failures.append(f"{name_en}: {exc}")
+            print(_text(config, f"{name_zh} 连接失败：{exc}", f"{name_en} FAILED: {exc}"))
         finally:
             source.stop()
 
-    controller = KmboxController(config.kmbox, config.aim, profiles=config.aim_profiles)
+    controller = KmboxController(
+        config.kmbox, config.aim, profiles=config.aim_profiles, output=config.mouse.output
+    )
     warning_text = _algorithm_warning_text(config, controller.algorithm_warnings)
     if warning_text:
         print(warning_text)
+    if config.mouse.output == "sendinput":
+        # 不走 controller.connect(): 测试的时候不能动用户的鼠标, 只确认拿得到
+        # SendInput 并读一次按键。
+        try:
+            check_local_mouse()
+            print(_text(config, "SendInput 正常", "SendInput OK"))
+        except Exception as exc:
+            failures.append(f"SendInput: {exc}")
+            print(_text(config, f"SendInput 连接失败：{exc}", f"SendInput FAILED: {exc}"))
+        # 读手的移动的那条路一起验。失败只警告, 不算测试失败: 它只影响轨迹。
+        monitor = RawMouseMonitor(lambda _dx, _dy: None)
+        try:
+            monitor.start()
+            print(_text(config, "Raw Input 正常（轨迹能读到手的移动）", "Raw Input OK (the trail sees the hand)"))
+        except OSError as exc:
+            print(
+                _text(
+                    config,
+                    f"!! Raw Input 注册失败：{exc}（只影响轨迹）",
+                    f"!! Raw Input failed: {exc} (only the trail is affected)",
+                )
+            )
+        finally:
+            monitor.stop()
+        if failures:
+            raise RuntimeError("; ".join(failures))
+        return
     try:
         controller.connect()
         print(
@@ -842,12 +890,39 @@ def check_connections(
 def create_source(config: AppConfig) -> FrameSource:
     if config.input.mode == "obs_websocket":
         return ObsScreenshotSource(config.obs)
+    if config.input.mode == "desktop":
+        return DesktopSource(config.desktop)
     return UdpSource(config.udp, config.input.mode)
+
+
+def output_label(config: AppConfig) -> str:
+    """横幅上「移动」那一栏。"""
+    if config.mouse.output == "sendinput":
+        return "SendInput"
+    return f"KMBox {config.kmbox.host}:{config.kmbox.port}"
+
+
+def input_frame_size(config: AppConfig) -> tuple[int, int]:
+    """送进管线的画面尺寸, 按当前输入方式取对应那一节。"""
+    if config.input.mode == "obs_websocket":
+        return (config.obs.width, config.obs.height)
+    if config.input.mode == "desktop":
+        return (config.desktop.width, config.desktop.height)
+    return (config.udp.width, config.udp.height)
 
 
 def source_label(config: AppConfig) -> str:
     if config.input.mode == "obs_websocket":
         return f"OBS WebSocket {config.obs.host}:{config.obs.port}"
+    if config.input.mode == "desktop":
+        desktop = config.desktop
+        backend = BACKEND_NAMES.get(desktop.backend, desktop.backend)
+        size = f"{desktop.width}x{desktop.height}"
+        return _text(
+            config,
+            f"本机屏幕 {backend} · 显示器 {desktop.monitor} · {size}",
+            f"Local screen {backend} · monitor {desktop.monitor} · {size}",
+        )
     if config.input.mode == "udp_video":
         kind = _text(config, "MPEG-TS/H.264 视频流", "MPEG-TS/H.264 video stream")
     else:

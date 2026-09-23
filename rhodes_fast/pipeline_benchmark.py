@@ -17,7 +17,7 @@ import onnxruntime as ort
 from .config import AppConfig
 from .console import configure_console_output
 from .detector import YoloDetector
-from .pipeline import create_source, select_target, source_label
+from .pipeline import create_source, input_frame_size, select_target, source_label
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,8 +149,8 @@ def run_pipeline_benchmark(
         "input": {
             "mode": config.input.mode,
             "source": source_label(config),
-            "width": config.udp.width if config.input.mode != "obs_websocket" else config.obs.width,
-            "height": config.udp.height if config.input.mode != "obs_websocket" else config.obs.height,
+            "width": input_frame_size(config)[0],
+            "height": input_frame_size(config)[1],
             "capture_fps": round(capture_fps, 3),
         },
         "benchmark": {

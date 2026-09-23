@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>源码</title>
+<link rel="stylesheet" href="design/styles.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<!-- 看源码用的独立窗口。原来是主窗口里的一个弹框：最宽 560px、没有高度上限也
+     没有滚动，小屏下源码一长下半截就切掉了。
+     这份代码是别人写的、还没审过的 —— 所以它只进 textContent，一个字都不进
+     innerHTML。源码里写一句 <script> 的话，前者显示那几个字符，后者执行它。 -->
+<body class="ef-sourcepage">
+
+  <header class="ef-sourcepage__head">
+    <span class="ef-panel__bar" aria-hidden="true"></span>
+    <span class="ef-panel__title" id="source-title">源码</span>
+    <span class="ef-panel__sub">SOURCE · 只读</span>
+    <span class="ef-sourcepage__spacer"></span>
+    <span class="ef-meta" id="source-count"></span>
+    <button class="ef-btn ef-btn--sm ef-btn--outline" type="button" id="source-close">关闭</button>
+  </header>
+
+  <p class="ef-meta ef-sourcepage__note">// 这份代码到现在为止一行都没执行过。看清楚再决定要不要导入 · Esc 关闭</p>
+
+  <!-- 一行一个 <li>：行号用列表自己的序号画，复制时不会跟着代码一起进剪贴板。 -->
+  <div class="ef-sourcepage__code" id="source-code" tabindex="0">
+    <ol class="ef-sourcepage__lines" id="source-lines"></ol>
+  </div>
+
+<script src="source.js"></script>
+</body>
+</html>

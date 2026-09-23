@@ -497,5 +497,36 @@ class StartupTests(_PresetGui):
         self.assertEqual(reopened.preset_choice.get(), NO_PRESET)
 
 
+class SinglePcInOldWindowTests(_PresetGui):
+    """旧的 tkinter 界面不加单机模式的控件, 只保证不出错 (规格 §6.5)。"""
+
+    def test_the_local_screen_hides_both_network_panels(self) -> None:
+        """本机屏幕没有地址端口可填。显示 UDP 那组的话, 用户会去改一个根本不起
+        作用的端口。"""
+        self.app.input_mode.set("本机屏幕")
+        self.app._switch_input_panel()
+        self.assertEqual(self.app.udp_panel.winfo_manager(), "")
+        self.assertEqual(self.app.obs_panel.winfo_manager(), "")
+
+    def test_the_old_window_keeps_the_single_pc_settings(self) -> None:
+        """在新界面里选了 SendInput, 到旧界面点一下保存就悄悄变回 KMBox 的话,
+        用户根本想不到是保存那一下改的。"""
+        config = load_config(self.settings, validate_model=False)
+        save_config(
+            replace(
+                config,
+                input=replace(config.input, mode="desktop"),
+                desktop=replace(config.desktop, backend="winrt", monitor=1, width=256, height=224),
+                mouse=replace(config.mouse, output="sendinput"),
+            ),
+            self.settings,
+        )
+        form = self._reopen()._read_form()
+        self.assertEqual(form.input.mode, "desktop")
+        self.assertEqual((form.desktop.backend, form.desktop.monitor), ("winrt", 1))
+        self.assertEqual((form.desktop.width, form.desktop.height), (256, 224))
+        self.assertEqual(form.mouse.output, "sendinput")
+
+
 if __name__ == "__main__":
     unittest.main()

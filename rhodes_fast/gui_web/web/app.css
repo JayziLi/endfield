@@ -1,0 +1,608 @@
+/* Endfield 界面自己的布局与覆盖。
+
+   加载顺序：design/styles.css 在前，这个文件在后 —— 靠的就是顺序覆盖 token。
+   design/ 目录逐字节对着设计系统，任何改动都写在这里，不写进去。 */
+
+/* ---------- 中文字体 ----------
+   design/ 里这五个变量的 CJK 兜底都是 "Noto Sans SC"，而我们没有自托管它：
+   日志、模型路径、报错里的中文是动态的，子集化漏字就是豆腐块，全量又是每字重
+   约 5MB。交给 Windows 自带的微软雅黑。拉丁与等宽保持自托管 —— 工业风的味道
+   主要在 Archivo / Barlow / IBM Plex Mono 上面。 */
+:root {
+  --font-display: "Archivo", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-ui: "Barlow", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-condensed: "Barlow Condensed", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Microsoft YaHei UI", "Microsoft YaHei", ui-monospace, monospace;
+  --font-cjk: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+html, body { height: 100%; overflow: hidden; }
+
+/* ---------- 无边框窗口的拖动区 ----------
+   这里不用 -webkit-app-region。WebView2 里 CSS.supports('-webkit-app-region','drag')
+   返回 true、computed 值也是 "drag"，但按住拖窗口纹丝不动 —— 那个属性的拖动行为
+   是 Electron / PWA 那一层实现的，引擎只是认得属性名。实测过。
+
+   pywebview 的机制在 webview/js/customize.js：给 .pywebview-drag-region 的元素挂
+   mousedown，回调里调 pywebviewMoveWindow。两个坑：
+   1. 监听器挂在元素上，子元素的 mousedown 会冒泡 —— 所以可拖区不能包住窗口按钮，
+      这里单独划了 .ef-titlebar__drag，按钮在它外面。
+   2. 监听器是页面加载时一次性挂的，加载后动态插进 DOM 的元素不会自动可拖。 */
+.ef-titlebar__drag {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ef-titlebar__btn { font: var(--weight-medium) 13px/1 var(--font-mono); }
+
+/* ---------- 主列：只有面板区滚动 ----------
+   design 的 .ef-app__main 是 overflow:auto，整列一起滚。我们要的是区段标题、
+   运行状态和动作行钉住，中间那块滚 —— 运行状态是常驻的，滚没了就等于没有。 */
+.ef-app__main { overflow: hidden; }
+
+.ef-screens {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  /* 滚动条会压住面板右边的 1px 描边，留一点余量。 */
+  padding-right: var(--space-2);
+}
+
+.ef-screen { display: flex; flex-direction: column; gap: var(--space-6); }
+/* [hidden] 的 display:none 来自浏览器默认样式, 上面那条 display:flex 权重更高
+   会把它盖掉 —— 四个面板会同时显示。必须显式写回来。 */
+.ef-screen[hidden] { display: none; }
+
+.ef-placeholder {
+  margin: 0;
+  color: var(--text-secondary);
+  font: var(--weight-regular) var(--text-body)/1.6 var(--font-cjk);
+}
+.ef-placeholder code {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  padding: 1px var(--space-3);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+/* ---------- 运行状态 ----------
+   .ef-log 自己没有高度，不给就会被 flex 压成 0。四行左右正好：日志一秒一行，
+   再高就挤掉面板区，再矮又看不出上下文。 */
+.ef-logwrap { flex: none; gap: var(--space-3); }
+.ef-logwrap__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-5);
+  padding-bottom: var(--space-3);
+}
+.ef-log { height: 104px; flex: none; }
+/* design 的 .ef-log__line 是 ts / lvl / msg 三列。管线打出来的是整行文本，
+   拆不出那三段，所以这里收成一列 —— 留着三列的话，唯一那个 span 会落在
+   max-content 的第一列里，长行不换行而是顶出去。 */
+.ef-log__line { grid-template-columns: 1fr; }
+.ef-log:empty::before {
+  content: "等待启动…";
+  color: var(--text-inverse-dim);
+}
+
+/* ---------- 动作行 ----------
+   设计系统没有这个组件，用它的基础类拼。 */
+.ef-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+.ef-actions__spacer { flex: 1; }
+
+/* 信号黄纪律：内容区同时只有一个黄块，就是这个按钮 —— 它回答「系统在不在跑」。
+   NavRail 当前项的黄属于外壳，另算。其余按钮一律 outline / secondary。
+   没在跑时是 outline（安静），跑起来才填黄并改说「停止」。两个类的切换在
+   app.js 的 setRunState 里，HTML 的初始标记里只有 outline。
+
+   这里不需要新样式：两个状态用的都是设计系统现成的 .ef-btn--outline /
+   .ef-btn--primary。停止那一下没用 .ef-btn--danger —— 停止不是破坏性操作，
+   管线会自己收尾，红色留给真的会丢东西的按钮（删预设、删算法）。 */
+
+/* ---------- 滚动条 ----------
+   design/base.css 已经把它做成了机加工的沟槽。这里只把面板区的调窄一点，
+   免得在 132px 的窄列旁边显得笨重。 */
+.ef-screens::-webkit-scrollbar { width: 8px; }
+
+/* ---------- 04 实时预览 ----------
+   这一屏要填满可用高度：画面被压成一条就没法看框了。 */
+.ef-screen[data-screen="04"] { flex: 1; min-height: 0; }
+
+.ef-previewwrap {
+  flex: 1;
+  /* 下限放在**外层**，不放在 .ef-preview 上。
+     放在孩子身上会这样坏：窗口一矮，外层被 flex 挤扁（它是 min-height:0 的），
+     而孩子的 min-height 不让它跟着缩，于是孩子溢出到外层外面，向下盖住 MetricRail。
+     实测在 1258x744（缩放 150%）下外层 180px、预览 220px，溢出 95px —— 画面的黑底
+     从四张指标卡的缝隙里透出来。
+     挪到外层之后：空间够就一起伸缩，谁都不会越界；空间不够时外层停在这个下限上，
+     由 .ef-screens 的 overflow:auto 出滚动条 —— 挤不下是滚动，不是盖住。 */
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.ef-previewwrap .ef-preview { flex: 1; min-height: 0; }
+
+/* design 给 .ef-preview__media 的是 grayscale(1) contrast(1.06) + object-fit:cover。
+   两条在这里都是错的：
+
+   - 检测框是彩色的。选中的目标画红框（BGR 40,70,255），其余画绿框（70,220,90），
+     见 preview.py:218。灰掉之后两种框的明度很接近，分不出自瞄锁的是哪一个 ——
+     而这一屏存在的理由就是看它锁对没有。
+   - cover 会裁画面。框的位置只有对着完整的一帧才说得通，裁掉边上一条就等于
+     在说谎。contain 留黑边，黑边正好是 --ink-0，跟外壳是同一个颜色。 */
+.ef-preview__media {
+  filter: none;
+  object-fit: contain;
+  /* 底下 30px 让给 telemetry 条 —— 帧自己的底部 24px 已经烧了一条状态文字
+     （preview.py:235「infer … | total … | targets …」），chrome 压上去就是
+     两层字叠在一起。 */
+  /* 下面 30px 让给 telemetry 条，所以高度要减掉它。
+
+     <img> 是替换元素，inset 那一套对它不管用：给 bottom:30px 而把 height 留成
+     auto，用的是图片的内在高度（480x270 原样缩在左上角）；height:100% 又会
+     盖过 bottom，画面捅穿下面的 MetricRail。两种都实测过。calc 是这里唯一
+     说得通的写法 —— 非替换元素（下面那两个覆盖层）就还是用 inset。 */
+  height: calc(100% - 30px);
+}
+.ef-preview__grain, .ef-preview__empty { inset: 0 0 30px 0; }
+
+/* design 的 __tele 是右上角竖排。挪到底部排成一行，跟 LIVE 徽标凑成设计稿里
+   那条 telemetry 条（徽标在左，数字在右，两边同高 30px）。 */
+.ef-preview__tele {
+  top: auto;
+  bottom: 0;
+  right: 0;
+  height: 30px;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-6);
+  padding-right: var(--space-6);
+}
+.ef-preview__tele div { display: flex; align-items: baseline; }
+
+/* 帧的左上角可能有轨迹状态文字（preview.py 的 _draw_trail_status，画在 y=15）。
+   垂直水印往下挪，避开它；object-fit:contain 留的黑边通常也在这一侧。 */
+.ef-preview__side { top: 40px; }
+
+/* [hidden] 的 display:none 是浏览器默认样式，权重最低 —— design 给这两个都设了
+   display，不写回来的话「未启动」会一直盖着画面，而 HTML 上 hidden 属性明明在。
+   同 .ef-screen[hidden]，这个坑在这个项目里已经是第二次了。 */
+.ef-preview__empty[hidden] { display: none; }
+.ef-preview__badge[hidden] { display: none; }
+
+/* MetricRail。design 的 .ef-metric__cap 是一块 34x5 的信号黄，四格就是四块 ——
+   加上跑起来填黄的启动按钮，内容区就有五个黄的了。这一屏的那一个留给按钮，
+   所以 index.html 里没有 __cap。 */
+.ef-metrics { flex: none; }
+
+
+/* ---------- 模态框 ----------
+   设计系统没有 Dialog（规格第 7 节的两个缺口之一）。用它的 token 拼：遮罩是
+   规格里定的 rgba(16,17,16,.72)，面板用 --shadow-overlay。 */
+.ef-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* [hidden] 的 display:none 是浏览器默认样式，权重最低，上面那条 display:flex
+   会把它盖掉 —— 弹窗就一直挡在界面上，而且 HTML 上 hidden 属性明明写着。
+   .ef-field 同理（design 给它设了 display:flex）。这个坑在这个项目里踩过三次。 */
+.ef-modal[hidden] { display: none; }
+/* .ef-field 本身也是 display:flex（design 定的），所以两个类都要写回来 ——
+   只写自己那个 ef-modal__field 是不够的，另一个照样把 [hidden] 盖掉。 */
+.ef-field[hidden] { display: none; }
+
+.ef-modal__scrim { position: absolute; inset: 0; background: rgba(16, 17, 16, .72); }
+
+/* 表面照 design 的 .ef-panel 来：同一套 vignette、同一条 1px 描边、同一个
+   角切。只给 --shadow-overlay 的话它是一个飘在上面的素白盒子 —— 能用，但一眼
+   看出来不是这套系统里的东西。阴影是 .ef-panel 没有的那一层，弹窗才需要。 */
+.ef-modal__panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 420px;
+  max-width: 560px;
+  padding: var(--space-6);
+  background: var(--panel-vignette), var(--surface-panel);
+  box-shadow: inset 0 0 0 1px var(--hairline), var(--shadow-overlay);
+  clip-path: var(--clip-br-lg);
+}
+
+/* 标题下面那条分隔线也照 .ef-panel__head —— 标题和正文贴在一起时，
+   「删除预设」和「确定删除…吗」两句话读起来是连着的一句。 */
+.ef-modal__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding-bottom: var(--space-5);
+  border-bottom: var(--rule);
+}
+
+/* 正文里有 
+（「确定删除预设「X」吗？
+
+删除后找不回来。」这类）。不留白
+   的话两段会挤成一行，而第二段往往正是「删除后找不回来」。 */
+.ef-modal__message {
+  margin: 0;
+  white-space: pre-wrap;
+  color: var(--text-secondary);
+  font: var(--weight-regular) var(--text-body)/1.6 var(--font-cjk);
+}
+
+.ef-modal__actions { display: flex; justify-content: flex-end; gap: var(--space-4); }
+
+/* ---------- 表单 ----------
+   design 的 .ef-panel__body 没有定纵向间距，这里的面板一行一个 .ef-field。 */
+.ef-panel__body { display: flex; flex-direction: column; gap: var(--space-5); }
+
+/* 画面输入的两组（UDP / OBS）按方式互斥显示。设计系统没有这个容器，自拼。 */
+.ef-inputgroup { display: flex; flex-direction: column; gap: var(--space-5); }
+/* [hidden] 的 display:none 是浏览器默认样式，权重最低 —— 上面那条 display:flex
+   会把它盖掉，于是两组同时显示，而 HTML 上 hidden 属性明明写着。 */
+.ef-inputgroup[hidden] { display: none; }
+
+/* 一行里挤两个字段时（地址 + 端口），第二个标签不该再占满 --field-label-w
+   那么宽，不然端口框会被挤到行尾。 */
+.ef-field__label--tight { width: auto; }
+
+/* 输入框在一行里平分剩余宽度。design 的 .ef-input 是 flex:1，一行两个就是
+   各一半，正好。窄的那个（端口）给个上限，不然 4455 后面拖一长条空白。 */
+.ef-field__row .ef-input:has(input[type="number"]) { max-width: 160px; }
+
+/* 运行中锁住的控件。旧界面 _set_running 的规矩：模型、浏览、加速方式、预设
+   下拉只在启动时读一次，运行中改了不生效 —— 留着能改就是在骗人。
+   保存/另存为不锁：边打边调好了，正该当场存下来。 */
+[data-lock-while-running][disabled] { opacity: .5; cursor: not-allowed; }
+
+/* ---------- 复选框与下拉框 ----------
+   design 的 .ef-check / .ef-select 是照 React 组件写的：那边根本没有原生控件，
+   状态在 JS 里，勾选态靠 .ef-check--on 这个类。我们用真的 <input>（表单语义、
+   键盘可达、Tab 顺序都是白给的），所以要自己把原生那个藏掉。
+
+   不用 appearance:none 直接把 input 当方块来画：design 的方块有 well 内阴影、
+   signal 底、sheen —— 全在 .ef-check__box 上，照搬一份就是第二处要同步的样式。 */
+.ef-check input[type="checkbox"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+}
+/* 焦点要看得见：原生框藏了，焦点环得落在画出来的那个方块上。 */
+.ef-check input[type="checkbox"]:focus-visible + .ef-check__box {
+  box-shadow: inset 0 0 0 2px var(--signal-2), inset 0 0 0 3px var(--paper-4);
+}
+
+/* 数字框的原生上下箭头跟这套设计完全不搭，而且窄框里它会把数字挤掉。 */
+.ef-input__el[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.ef-input__el[type="number"]::-webkit-outer-spin-button,
+.ef-input__el[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ---------- 02 识别与控制 ----------
+   照规格：第一行是「模型输出 1.45fr + 系统状态 1fr」，第二行是两套方案等宽。 */
+.ef-detectionrow {
+  display: grid;
+  grid-template-columns: 1.45fr 1fr;
+  gap: var(--space-6);
+  /* 不写 align-items：grid 默认 stretch，两块面板同高、底边齐。
+     写成 start 的话每块只占自己内容的高度，实测两边底边差 68px（左 207 高、
+     右 275 高）——两块并排的面板底边不齐，一眼就看出来是歪的。
+     .ef-panel 是 flex column 且 __body 带 flex:1，所以撑高的是面板背景，
+     内容照旧贴着顶部。 */
+}
+.ef-profilerow { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-6); }
+
+/* 控制算法单独一块。design 的 --sunken 正好是「凹下去的子区域」。 */
+.ef-algobox { margin-bottom: var(--space-3); }
+.ef-algobox__share { justify-content: flex-end; }
+
+.ef-params { display: flex; flex-direction: column; gap: var(--space-5); }
+/* 高级参数默认折起来。一股脑全铺开的话，常用的那两三个会被淹在十几行里。 */
+.ef-params__advanced > summary {
+  cursor: pointer;
+  font: var(--weight-medium) var(--text-caption)/1 var(--font-ui);
+  letter-spacing: var(--tracking-label);
+  color: var(--text-secondary);
+  padding: var(--space-3) 0;
+}
+.ef-params__advanced[open] { display: flex; flex-direction: column; gap: var(--space-5); }
+
+/* 方案关掉时整块压暗 + 不可点，照规格。留着能点的话用户会调半天一个根本不
+   生效的方案 —— 而「为什么没反应」是这类界面最常见的求助。
+   标题栏那个开关本身要留着能点，不然关掉就再也打不开了。 */
+.ef-profile--off .ef-panel__body { opacity: .45; pointer-events: none; }
+
+/* 系统状态那三盏灯竖着排。 */
+.ef-panel__body > .ef-lamp { padding-left: 0; }
+
+/* ---------- 03 算法库 ----------
+   设计系统没有 Table（规格第 7 节的两个缺口之一）。用 grid 拼，六列对着
+   library_rows() 的六元组：显示名 / 标识 / 作者 / 源文件 / 导入时间 / 状态。 */
+/* 算法库是这一屏唯一的面板，让表格占满可用高度 —— 固定一个 max-height 的话，
+   窗口拉大之后下面是一片空白而表格还在 280px 里挤着。 */
+.ef-screen[data-screen="03"] { flex: 1; min-height: 0; }
+.ef-librarywrap { flex: 1; min-height: 0; }
+.ef-librarywrap .ef-panel__body { flex: 1; min-height: 0; }
+
+.ef-library {
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-field);
+  box-shadow: inset 0 0 0 1px var(--hairline), var(--well);
+  clip-path: var(--clip-br-sm);
+}
+.ef-library__body { flex: 1; min-height: 0; overflow: auto; }
+.ef-library__actions { flex: none; justify-content: flex-end; }
+
+.ef-libraryrow {
+  display: grid;
+  grid-template-columns: 1.6fr 1.2fr 1fr 1.3fr 1.1fr .7fr;
+  gap: var(--space-5);
+  align-items: center;
+  padding: var(--space-4) var(--space-5);
+  cursor: pointer;
+  /* 前缘那条 2px 的 ink 竖条在选中时出现。留一条透明的占位，不然选中的一瞬间
+     整行会横向跳 2px。 */
+  border-left: 2px solid transparent;
+}
+.ef-libraryrow + .ef-libraryrow { box-shadow: inset 0 1px 0 var(--hairline-soft); }
+
+.ef-libraryrow__cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--weight-regular) var(--text-caption)/1.4 var(--font-mono);
+  color: var(--text-secondary);
+}
+/* 第一列是显示名，是这一行里用户真正在找的东西。 */
+.ef-libraryrow__cell--name {
+  font-family: var(--font-cjk);
+  font-weight: var(--weight-medium);
+  color: var(--ink-1);
+}
+
+.ef-libraryrow--head {
+  cursor: default;
+  background: var(--paper-3);
+  box-shadow: inset 0 -1px 0 var(--hairline);
+}
+.ef-libraryrow--head .ef-libraryrow__cell {
+  font-family: var(--font-ui);
+  letter-spacing: var(--tracking-label);
+  color: var(--text-muted);
+}
+
+/* 规范 States 表的原话：Selection is a block, not an underline。 */
+.ef-libraryrow--active {
+  background-color: var(--signal-2);
+  background-image: var(--sheen-signal);
+  border-left-color: var(--ink-1);
+}
+.ef-libraryrow--active .ef-libraryrow__cell { color: var(--ink-1); }
+
+/* ---------- 预设条 ----------
+   design 的 .ef-section__aside 是竖排右对齐（那儿原本放两行装饰性的 meta）。
+   预设条是一排控件，改成横排。 */
+.ef-presetbar {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* .ef-select 自带 flex:1，放进这条里会把三个按钮挤到看不见。
+   固定宽度：预设名最长 40 个字（presets.py 的 _MAX_NAME），全展开会占掉半个
+   标题栏，这里截断，完整的名字在下拉打开时看得到。 */
+.ef-presetbar__pick {
+  flex: 0 0 168px;
+  min-height: var(--control-h-sm);
+}
+
+/* 控件高度跟 ef-btn--sm 对齐，不然一排里那个下拉高出一截。 */
+.ef-presetbar__pick .ef-select__el {
+  font-size: var(--text-caption);
+  padding-right: var(--space-8);
+}
+
+.ef-presetbar .ef-btn { white-space: nowrap; }
+
+/* ---------- 04 屏的控制栏 ----------
+   三个勾选框 + 轨迹长度滑条，排在预览画面上面。 */
+.ef-previewbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex: none;
+}
+
+/* .ef-slider 自带 flex:1，不收着的话它会把三个勾选框挤到左边缘。
+   align-items 也要改：design 里是 flex-end（为了配 .ef-slider__ticks，
+   这里没有刻度），一排里会比勾选框低一截。 */
+.ef-previewbar__slider {
+  flex: 0 1 300px;
+  align-items: center;
+}
+
+/* 那块黑色读数在一排 28px 的控件里太高。 */
+.ef-previewbar__slider .ef-slider__value {
+  min-height: var(--control-h-sm);
+  min-width: 76px;
+  font-size: var(--text-body);
+}
+
+/* ---------- 固定状态行 ----------
+   管线每秒重复打的那两行不进日志，合成这一行原地刷新。贴在日志下沿，
+   读序是「上面是历史，下面是现在」。
+
+   等宽 + tabular-nums：数字每秒都在变，比例字体下宽度会跟着抖，整行左右晃。
+   白底深字是故意的（日志是深底浅字）：这一行不是日志的一部分，是它的读数。 */
+.ef-statusline {
+  flex: none;
+  min-height: var(--control-h-sm);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-5);
+  background: var(--surface-panel);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  clip-path: var(--clip-br-sm);
+  font: var(--weight-medium) var(--text-caption)/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-1);
+  /* 窗口窄的时候宁可截断也不换行：换行会把动作行往下顶，而这一行高度必须是死的。 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+/* ---------- 还没有数的那一格 ----------
+   MetricRail 的数字是 Archivo Black 排的。占位符跟着用那个字体，中点会排成一个
+   实心方块、em dash 会排成一条粗黑杠 —— 两种都像缺字，而不像「还没有数」。
+   原来为了躲开粗黑杠改用了中点，其实躲错了方向：问题不在选哪个字符，在于占位符
+   根本不该用那个字重。这里把它换成界面字体 + 弱化颜色，跟状态栏的横杠读起来一致。
+   有数之后 app.js 会把这个类摘掉，数字照旧是 Archivo Black。 */
+.ef-num--idle {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-medium);
+  font-size: var(--text-body-lg);
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+/* ---------- 运行状态的折叠 ----------
+   折的是滚动的那一段，固定状态行留着：它只有 28px，而且是折起来之后唯一还看得到
+   的实时数字。省下的 104px + 一个间距归 .ef-screens（它是 flex:1），也就是归
+   04 屏的画面。 */
+.ef-logwrap__spacer { flex: 1; }
+/* 那一行是 align-items:baseline（为了让「运行状态」和 RUNTIME LOG 对齐基线）。
+   按钮里没有文字，没有基线可对，跟着 baseline 走会掉下去半个身位。 */
+#log-toggle { align-self: center; }
+.ef-logwrap--collapsed .ef-log { display: none; }
+/* 箭头指向「点下去会往哪走」：展开时朝上（收起来），折叠时朝下（放下来）。 */
+#log-toggle svg { transition: transform var(--dur-fast) var(--ease-mech); }
+.ef-logwrap:not(.ef-logwrap--collapsed) #log-toggle svg { transform: rotate(180deg); }
+
+/* ================================================================
+   独立窗口（popups.py）：看源码的、放大看预览的。
+   两个页面都加载这份 app.css —— 字体覆盖（微软雅黑兜中文）要一致。
+   ================================================================ */
+
+/* ---------- 源码窗口 ----------
+   原来是主窗口里的弹框：最宽 560px、没有高度上限也没有滚动，小屏下源码一长
+   下半截就切掉了。现在整窗都是它：标题一行、说明一行，剩下全给代码区，
+   代码区自己两个方向都能滚。 */
+.ef-sourcepage {
+  height: 100%;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  box-sizing: border-box;
+  background: var(--surface-page);
+}
+.ef-sourcepage__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding-bottom: var(--space-4);
+  border-bottom: var(--rule);
+}
+.ef-sourcepage__spacer { flex: 1; }
+.ef-sourcepage__note { flex: none; margin: 0; }
+
+/* 深底浅字，跟运行日志一个路子：代码是「机器那一侧」的东西。 */
+.ef-sourcepage__code {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ink-1);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  clip-path: var(--clip-br-lg);
+  outline: none;
+}
+
+/* 行号用 <ol> 自己的序号画：复制代码时序号不会跟着进剪贴板（::marker 不参与
+   选区）。左边留五个字宽，四位数的行号也放得下。
+   不换行（white-space: pre）：代码折行之后缩进就看不清了，而 Python 的缩进
+   就是语法。宁可横着滚。 */
+.ef-sourcepage__lines {
+  margin: 0;
+  padding: var(--space-5) var(--space-6) var(--space-5) 5ch;
+  font: var(--weight-regular) var(--text-body)/1.6 var(--font-mono);
+  color: var(--paper-2);
+  tab-size: 4;
+}
+.ef-sourcepage__lines li {
+  white-space: pre;
+  padding-left: var(--space-5);
+  /* 空行也要占一行的高度，不然行号会挤在一起、跟代码对不上。 */
+  min-height: 1.6em;
+}
+.ef-sourcepage__lines li::marker {
+  color: var(--text-inverse-dim);
+  font-size: .85em;
+}
+
+/* ---------- 放大预览窗口 ----------
+   整窗就是画面。contain 不是 cover：检测框的位置只有对着完整的一帧才说得通，
+   裁掉边上一条就等于挪了框（跟 04 屏那张图同一个理由）。 */
+.ef-popout {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--ink-0);
+}
+.ef-popout__media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* 还没接上流的时候 <img> 会把 alt 文字画出来，压在「等待画面」底下。 */
+  color: transparent;
+  font-size: 0;
+}
+.ef-popout__empty {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: var(--weight-medium) var(--text-caption)/1 var(--font-ui);
+  letter-spacing: var(--tracking-label);
+  color: var(--text-inverse-dim);
+  pointer-events: none;
+}
+/* 上面那条 display:flex 会盖掉 [hidden] 的 display:none —— 浏览器默认样式权重
+   最低。不写回来的话，画面来了「等待画面」还压在上面。 */
+.ef-popout__empty[hidden] { display: none; }

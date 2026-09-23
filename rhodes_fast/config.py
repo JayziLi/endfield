@@ -15,6 +15,14 @@ TRAIL_MIN_SECONDS = 0.2
 TRAIL_MAX_SECONDS = 2.0
 
 
+# 画面输入方式。desktop = 本机屏幕 (单机模式), 其余三个是从主机发过来的。
+INPUT_MODE_VALUES = frozenset({"udp_video", "udp_jpeg", "obs_websocket", "desktop"})
+# 本机屏幕的采集后端, 名字照 DXcam 的 backend 参数: dxgi = 桌面复制, winrt = WGC。
+DESKTOP_BACKEND_VALUES = frozenset({"dxgi", "winrt"})
+# 鼠标移动由谁发。
+MOUSE_OUTPUT_VALUES = frozenset({"kmbox", "sendinput"})
+
+
 @dataclass(frozen=True, slots=True)
 class InputConfig:
     mode: str = "udp_video"
@@ -28,6 +36,10 @@ class UiConfig:
     # 实时预览里的轨迹长度。是看的偏好, 不是一套游戏配置, 所以不进预设。
     # 画面/轨迹/最优路径这几个勾选框不存: 每次打开都只勾「画面」。
     trail_seconds: float = 0.5
+    # 运行日志折起来了没有。折叠是为了把高度让给预览画面, 所以要记住 ——
+    # 每次打开都得再折一次的话, 这个开关就没意义了。跟轨迹长度一样是「看的偏好」,
+    # 不进预设。
+    log_collapsed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +90,26 @@ class KmboxConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DesktopConfig:
+    """本机屏幕采集: 抓所选显示器正中央的 width x height (物理像素)。"""
+
+    backend: str = "dxgi"
+    # DXcam 的 output_idx。
+    monitor: int = 0
+    width: int = 320
+    height: int = 320
+
+
+@dataclass(frozen=True, slots=True)
+class MouseConfig:
+    """鼠标移动由谁发。kmbox.enabled 仍然只管 KMBox: 选 kmbox 但没启用 = 只识别
+    不移动; 选 sendinput 就是启用 —— 它没有「设备连不上」这回事, 而且只在按住
+    触发键时才动。"""
+
+    output: str = "kmbox"
+
+
+@dataclass(frozen=True, slots=True)
 class AimProfileConfig:
     enabled: bool = True
     trigger: str = "right"
@@ -114,6 +146,10 @@ class AppConfig:
     aim_profile_2: AimProfileConfig = field(
         default_factory=lambda: AimProfileConfig(enabled=False, trigger="left")
     )
+    # 单机模式加的两节。放在最后并带默认值: 老的 settings.txt 没有这两节,
+    # 各处直接构造 AppConfig 的地方也不用跟着改。
+    desktop: DesktopConfig = field(default_factory=DesktopConfig)
+    mouse: MouseConfig = field(default_factory=MouseConfig)
 
     @property
     def aim_profiles(self) -> tuple[AimProfileConfig, AimProfileConfig]:
@@ -142,6 +178,8 @@ def load_config(path: str | Path, *, validate_model: bool = True) -> AppConfig:
     model_raw["output_layout"] = "auto"
     model = ModelConfig(**model_raw)
     kmbox = KmboxConfig(**raw.get("kmbox", {}))
+    desktop = DesktopConfig(**raw.get("desktop", {}))
+    mouse = MouseConfig(**raw.get("mouse", {}))
     aim_raw = dict(raw.get("aim", {}))
     aim_raw.pop("gain_x", None)
     aim_raw.pop("gain_y", None)
@@ -184,8 +222,16 @@ def load_config(path: str | Path, *, validate_model: bool = True) -> AppConfig:
 
     if validate_model and not model.path.is_file():
         raise FileNotFoundError(f"ONNX model not found: {model.path}")
-    if input_config.mode not in {"udp_video", "udp_jpeg", "obs_websocket"}:
+    if input_config.mode not in INPUT_MODE_VALUES:
         raise ValueError(f"Unsupported input mode: {input_config.mode}")
+    if desktop.backend not in DESKTOP_BACKEND_VALUES:
+        raise ValueError(f"Unsupported desktop capture backend: {desktop.backend}")
+    if desktop.monitor < 0:
+        raise ValueError("Desktop monitor index must be zero or greater")
+    if desktop.width <= 0 or desktop.height <= 0:
+        raise ValueError("Desktop capture dimensions must be positive")
+    if mouse.output not in MOUSE_OUTPUT_VALUES:
+        raise ValueError(f"Unsupported mouse output: {mouse.output}")
     if ui.language not in {"zh", "en"}:
         raise ValueError(f"Unsupported runtime language: {ui.language}")
     if not TRAIL_MIN_SECONDS <= ui.trail_seconds <= TRAIL_MAX_SECONDS:
@@ -226,6 +272,8 @@ def load_config(path: str | Path, *, validate_model: bool = True) -> AppConfig:
         aim=aim,
         aim_profile_1=profile_1,
         aim_profile_2=profile_2,
+        desktop=desktop,
+        mouse=mouse,
     )
 
 
@@ -292,6 +340,8 @@ def _read_config(path: Path) -> dict:
         "aim": AimConfig,
         "aim_profile_1": AimProfileConfig,
         "aim_profile_2": AimProfileConfig,
+        "desktop": DesktopConfig,
+        "mouse": MouseConfig,
     }
     return {
         name: _convert_section(dict(parser[name]), section_type)

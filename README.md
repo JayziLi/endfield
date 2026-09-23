@@ -10,6 +10,17 @@ Endfield 是一套面向 Windows 的本地实时视觉检测与移动控制工�
 
 ![Endfield 控制面板](docs/endfield-control-panel.png)
 
+## v1.3 新界面与单机模式
+
+新增基于 WebView2 的下一代桌面界面：运行设置、识别与控制、实时预览和算法库统一使用新的 Endfield 视觉系统；预设切换、动态参数、运行日志、系统状态灯、源码查看和放大预览均已接入真实后端。新版入口为 `endfield-gui-next`，当前仍与经典界面并存，默认 `start.bat` 暂时继续打开经典界面。安装与启动新版界面：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[webview]"
+.\.venv\Scripts\pythonw.exe -m rhodes_fast.gui_web
+```
+
+同时新增单机模式：可以直接捕获本机屏幕中央区域，并通过 Windows `SendInput` 输出相对鼠标移动，不再强制要求副机或 KMBox。需要本机屏幕捕获时安装 `.[local]` 可选依赖；副机 UDP、OBS 和 KMBox 流程仍完整保留。
+
 ## v1.2 预设、轨迹与弹道预测
 
 新增可导入的 **卡尔曼弹道预测**：从算法库导入 [`examples/kalman_projectile.py`](examples/kalman_projectile.py)，即可按毫秒调节额外提前量，并使用变向响应滑块及时间快捷按钮。它需要本版主程序提供的算法接口 v3。参见[安装与调节说明](docs/kalman-projectile-guide.zh-CN.md)。
@@ -163,6 +174,29 @@ OBS WebSocket 截图方式最容易配置，但频繁请求截图的延迟通常
 
 程序支持一个完整 JPEG 放在单个 UDP 数据报，也支持连续分片：第一片以 JPEG `FF D8` 开始，最后一片包含 `FF D9`。单帧上限 8 MiB，接收端始终只发布最新的完整帧。
 
+### D. 单机：本机屏幕
+
+游戏和推理在同一台电脑上时，选 `本机屏幕`，程序直接抓所选显示器正中央的一块（默认 320 × 320）。需要先安装可选依赖：
+
+```powershell
+.venv\Scripts\python -m pip install -e .[local]
+```
+
+- 采集方式：`DXGI 桌面复制`（推荐）或 `WGC`，两个都是 Windows 自带的接口。
+- 显示器编号：`0` 起。按「测试输入」时日志会打出所选显示器的分辨率，可以据此确认选中的是哪块屏。
+- 游戏要全屏或无边框铺满那块屏，准心在屏幕正中央；建议用无边框窗口，部分游戏的独占全屏抓不到画面。
+- 本程序的窗口和放大预览不要挡在那块屏的正中央：抓的是整块屏幕，挡住的部分会被当成游戏画面去识别。
+- 推理和游戏共用一张显卡，两边都会变慢。在一台 144 Hz 屏幕的笔记本上实测：从画面出现在屏幕上到算出目标 P50 3.4 ms，采集线程约占一个 CPU 核心的六成。
+
+## 移动输出：KMBox 或 SendInput
+
+「运行设置」里的「移动输出」决定鼠标移动由谁来发，跟画面从哪来互不相关，可以任意组合（比如本机屏幕 + KMBox）。
+
+- **KMBox**：和原来一样。「启用 KMBox 控制」只管 KMBox，不勾就是只识别不移动。
+- **本机 SendInput**：用 Windows 的 SendInput 发相对移动，用系统按键状态读触发键，不需要额外硬件，只在按住触发键时才动。轨迹功能需要的「手的移动」从 Raw Input 读取。
+
+SendInput 发出的移动带有系统的「注入」标记，其他程序可以识别出来。游戏以管理员身份运行时，本程序也要以管理员身份运行，否则系统会静默拦下 SendInput，而且不报任何错。
+
 ## 第一次调移动参数
 
 建议按这个顺序调，最容易收敛：
@@ -237,7 +271,7 @@ Endfield 本地运行，不会主动上传画面、模型或配置。网络流�
 
 ### 有识别框但没有移动
 
-确认 KMBox 已启用、地址/端口/UUID 正确、绑定的触发键正在按住、目标在 FOV 内，并检查目标类别是否与模型一致。
+确认 KMBox 已启用、地址/端口/UUID 正确、绑定的触发键正在按住、目标在 FOV 内，并检查目标类别是否与模型一致。用 SendInput 时，如果游戏以管理员身份运行，本程序也要以管理员身份运行。
 
 ## 开发与测试
 
@@ -247,6 +281,14 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe -m build
 ```
+
+新的 WebView 界面还在开发中，入口是 `endfield-gui-next`，窗口运行时是可选依赖：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install "pywebview>=5.0,<6"
+```
+
+已知限制：这个窗口是无边框的（标题栏由界面自己画），所以拿不到 Windows 的贴边分屏（Aero Snap）——把窗口拖到屏幕边缘不会自动半屏。要支持它得接管 Win32 的 `WM_NCHITTEST`，目前不做。同样的原因，最大化会铺满整块屏幕并盖住任务栏。
 
 更完整的界面、算法和性能说明见 [中文产品文档](docs/product-guide.zh-CN.md)。
 
@@ -258,4 +300,4 @@ python -m venv .venv
 
 ## English quick start
 
-Endfield is a local Windows application for low-latency YOLO inference on a secondary PC, with optional KMBox Net relative-motion output. v1.2 adds whole-game presets, a live aim-trail preview, and an importable Kalman projectile predictor to the hot-switchable motion-algorithm library. Install Python 3.11–3.13, download the latest Windows ZIP from Releases, and double-click `start.bat`. The first run creates an isolated environment, selects CPU or NVIDIA dependencies, downloads and verifies the official YOLOv5n ONNX model, and opens the GUI. Use `setup.bat cpu` or `setup.bat nvidia` to override hardware detection. Personal settings, model weights, imported algorithms, and generated engine caches are never tracked by Git.
+Endfield is a local Windows application for low-latency YOLO inference and tunable motion control. v1.3 adds a next-generation WebView2 interface plus local-screen capture and Windows SendInput output, while retaining the secondary-PC UDP/OBS and KMBox workflows. Install Python 3.11–3.13, download the latest Windows ZIP from Releases, and double-click `start.bat` for the classic interface. To try the new interface, install the `webview` extra and run `pythonw -m rhodes_fast.gui_web`; install the `local` extra for local-screen capture. Personal settings, model weights, imported algorithms, and generated engine caches are never tracked by Git.

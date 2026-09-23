@@ -1,0 +1,53 @@
+/* ENDFIELD UI — type. Three roles: DISPLAY (heavy/wide), UI (tracked grotesque),
+   MONO (telemetry). Latin uppercase + tracking for all labels; CJK never tracked hard. */
+:root{
+  --font-display:"Archivo","Archivo Black","Noto Sans SC",system-ui,sans-serif;
+  --font-ui:"Barlow","Noto Sans SC",system-ui,sans-serif;
+  --font-condensed:"Barlow Condensed","Noto Sans SC",system-ui,sans-serif;
+  --font-mono:"IBM Plex Mono","Noto Sans SC",ui-monospace,monospace;
+  --font-cjk:"Noto Sans SC",system-ui,sans-serif;
+
+  --weight-light:300; /* @kind other */
+  --weight-regular:400; /* @kind other */
+  --weight-medium:500; /* @kind other */
+  --weight-semibold:600; /* @kind other */
+  --weight-bold:700; /* @kind other */
+  --weight-black:900; /* @kind other */
+
+  /* stretch axis — display type on the sheets is WIDE, labels are normal */
+  --stretch-display:112; /* @kind other */
+  --stretch-normal:100; /* @kind other */
+
+  /* size scale — tuned for 1440-wide desktop control software */
+  --text-micro:10px;      /* //-prefixed meta lines, axis ticks */
+  --text-label:11px;      /* field labels, tab indices, state captions */
+  --text-caption:12px;
+  --text-body:13px;       /* default UI body */
+  --text-body-lg:15px;
+  --text-title:18px;      /* panel / module titles (CJK) */
+  --text-heading:24px;
+  --text-display-sm:32px;
+  --text-display:44px;
+  --text-numeral:56px;    /* metric rail value */
+  --text-numeral-lg:72px;
+  --text-poster:120px;    /* section index "01" / hero */
+
+  --leading-tight:1; /* @kind other */
+  --leading-snug:1.15; /* @kind other */
+  --leading-normal:1.45; /* @kind other */
+  --leading-loose:1.7; /* @kind other */
+
+  --tracking-display:-0.03em; /* @kind other */   /* heavy display sets tight */
+  --tracking-normal:0; /* @kind other */
+  --tracking-wide:0.06em; /* @kind other */
+  --tracking-label:0.12em; /* @kind other */      /* uppercase latin labels */
+  --tracking-micro:0.18em; /* @kind other */      /* micro meta lines */
+
+  /* composed roles */
+  --type-display:var(--weight-black) var(--text-display)/var(--leading-tight) var(--font-display);
+  --type-numeral:var(--weight-black) var(--text-numeral)/var(--leading-tight) var(--font-display);
+  --type-title:var(--weight-bold) var(--text-title)/var(--leading-snug) var(--font-cjk);
+  --type-body:var(--weight-regular) var(--text-body)/var(--leading-normal) var(--font-ui);
+  --type-label:var(--weight-semibold) var(--text-label)/var(--leading-snug) var(--font-ui);
+  --type-mono:var(--weight-regular) var(--text-body)/var(--leading-normal) var(--font-mono);
+}

@@ -4,9 +4,9 @@ include *.bat
 include *.example.toml
 include *.example.txt
 include requirements-*.txt
-recursive-include docs *.md *.png
+recursive-include docs *.md *.png *.jpg
 recursive-include examples *.py
-recursive-include rhodes_fast/ui/assets *.jpg
+recursive-include rhodes_fast/gui_web/web *.html *.css *.js *.woff2
 prune models
 prune MODEL
 global-exclude *.onnx *.engine *.plan *.pt *.pth

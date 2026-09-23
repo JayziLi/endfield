@@ -63,7 +63,14 @@ def _landed_command(recent_commands, lag: int) -> tuple[float, float]:
 
     recent_commands 最新的在末尾, 对应上一帧。第 k-lag 帧发出的指令在第 k 帧生效,
     所以往回数第 lag 个就是它。
+
+    lag <= 0 要单独挡掉, 不能靠下标: Python 的 -0 等于 0, commands[-0] 取的是
+    **最老**的那一条, 而不是「没有」。这一支原来被构造函数里的 max(1, ...) 盖着,
+    代价是回路延迟根本填不进 0 —— 而 0 是个有意义的设置 (不要前馈)。
+    没有延迟就没有「刚落地」这回事, 返回 0。
     """
+    if lag <= 0:
+        return 0.0, 0.0
     commands = list(recent_commands)
     if len(commands) < lag:
         return 0.0, 0.0
@@ -113,13 +120,17 @@ class Feedforward:
     NAME = "feedforward"
     DISPLAY_NAME = "速度前馈"
     PARAMS: tuple[Param, ...] = (
-        Param("loop_delay_frames", 8.0, 1.0, 30.0, "回路延迟（帧）"),
+        # 三个下限都是 0, 而且 0 都有意义: 回路延迟 0 = 不要前馈 (整个退化成比例
+        # 控制, 但在子类里就是「只要风 / 只要弧线」这种别处给不了的配法), 前馈强度
+        # 0 = 同上, 速度平滑 0 = 速度估计冻在 0。界面上的滑条按这里画, 写个非零
+        # 下限用户就拖不到底, 手打也会被夹回去。
+        Param("loop_delay_frames", 8.0, 0.0, 30.0, "回路延迟（帧）"),
         Param("gain", 1.0, 0.0, 2.0, "前馈强度"),
-        Param("velocity_smoothing", 0.25, 0.01, 1.0, "速度平滑"),
+        Param("velocity_smoothing", 0.25, 0.0, 1.0, "速度平滑"),
     )
 
     def __init__(self, params: Mapping[str, float]) -> None:
-        self._lag = max(1, int(round(params["loop_delay_frames"])))
+        self._lag = max(0, int(round(params["loop_delay_frames"])))
         self._gain = params["gain"]
         self._alpha = params["velocity_smoothing"]
         self.reset()
@@ -179,11 +190,13 @@ class InFlight:
     NAME = "inflight"
     DISPLAY_NAME = "扣除在途指令"
     PARAMS: tuple[Param, ...] = (
-        Param("loop_delay_frames", 8.0, 1.0, 30.0, "回路延迟（帧）"),
+        Param("loop_delay_frames", 8.0, 0.0, 30.0, "回路延迟（帧）"),
     )
 
     def __init__(self, params: Mapping[str, float]) -> None:
-        self._lag = max(1, int(round(params["loop_delay_frames"])))
+        # 0 = 没有在途指令要扣, 整个退化成比例控制。_in_flight 的 lag <= 1 那一支
+        # 已经覆盖了。
+        self._lag = max(0, int(round(params["loop_delay_frames"])))
 
     def reset(self) -> None:
         return None

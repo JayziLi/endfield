@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>实时预览</title>
+<link rel="stylesheet" href="design/styles.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<!-- 放大看预览的独立方形窗口。采集画面是 320x320 的正方形，窗口也是方的，
+     画面正好铺满。
+     <img> 上故意没有 src：/preview.mjpg 是一条不会结束的流，写在标记里的话
+     window 的 load 事件永远不触发，pywebview 就一直当这个窗口没起来 —— 主窗口
+     踩过这个坑（见 index.html 预览屏的注释）。流由 popout.js 在 load 之后接上。 -->
+<body class="ef-popout">
+  <img class="ef-popout__media" id="popout-media" alt="实时画面">
+  <div class="ef-popout__empty" id="popout-empty">等待画面 · WAITING FOR FRAMES</div>
+<script src="popout.js"></script>
+</body>
+</html>

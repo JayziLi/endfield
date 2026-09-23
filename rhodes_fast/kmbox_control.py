@@ -14,6 +14,7 @@ from kmbox_universal import KMBoxClient, KMBoxError
 from .aim_algorithms import Observation, UnknownAlgorithm, create_algorithm, dynamic_kp as _kp
 from .config import AimConfig, AimProfileConfig, KmboxConfig
 from .detector import Detection
+from .local_mouse import LocalMouseClient, RawMouseMonitor
 
 # Also covers time-based algorithms (up to 200 ms at high capture rates).
 _COMMAND_HISTORY = 512
@@ -44,7 +45,7 @@ class _AimMotionState:
 
 
 class HandMotion:
-    """累加 KMBox 监听口报上来的物理鼠标位移。
+    """累加物理鼠标的位移: KMBox 模式来自盒子的监听口, SendInput 模式来自 Raw Input。
 
     库本身只保留最新一包, 不累加。监听线程每收到一包就回调一次, 主循环每帧取走一次,
     两边不在同一个线程, 所以加锁。锁每帧只抢一次, 没有竞争时是百纳秒级。
@@ -58,9 +59,12 @@ class HandMotion:
     def on_report(self, state) -> None:
         mouse = state.mouse
         if mouse.x or mouse.y:
-            with self._lock:
-                self._x += mouse.x
-                self._y += mouse.y
+            self.add(mouse.x, mouse.y)
+
+    def add(self, dx: int, dy: int) -> None:
+        with self._lock:
+            self._x += dx
+            self._y += dy
 
     def take(self) -> tuple[int, int]:
         with self._lock:
@@ -79,8 +83,12 @@ class KmboxController:
         *,
         profiles: tuple[AimProfileConfig, AimProfileConfig] | None = None,
         reload_algorithms: Callable[[], list[str]] | None = None,
+        output: str = "kmbox",
     ):
         self.device_config = device
+        # 鼠标移动由谁发: "kmbox" 或 "sendinput" (config.mouse.output)。两种客户端
+        # 接口一样 (move / isdown_* / close), 算法路径不用分叉。
+        self.output = output
         self.aim_config = aim
         self.runtime_file = runtime_file
         # 重新加载算法库用的钩子, 由管线提供。放成回调而不是让这个模块自己去读
@@ -160,6 +168,11 @@ class KmboxController:
         return self._algorithms[index].NAME
 
     def connect(self) -> None:
+        if self.output == "sendinput":
+            # kmbox.enabled 只管 KMBox。选了 SendInput 就是启用: 它没有「设备连不上」
+            # 这回事, 而且只在按住触发键时才动。
+            self._client = self._open_local_mouse()
+            return
         if not self.device_config.enabled:
             return
         last_error: Exception | None = None
@@ -184,6 +197,27 @@ class KmboxController:
         raise RuntimeError(
             f"KMBox did not respond after {self.device_config.connect_attempts} attempts: {last_error}"
         )
+
+    def _open_local_mouse(self) -> LocalMouseClient:
+        """SendInput 客户端, 连同读手的移动的 Raw Input 监听。
+
+        监听注册失败只影响轨迹 (看不到手的移动), 为它拦下整条管线不值得 ——
+        但要说出来, 不然用户只会觉得轨迹怪。
+        """
+        monitor: RawMouseMonitor | None = RawMouseMonitor(self.hand_motion.add)
+        try:
+            monitor.start()
+        except OSError as exc:
+            monitor = None
+            self.algorithm_notices.append(
+                f"!! 读不到手在鼠标上的移动（Raw Input：{exc}），轨迹里只有程序发出的移动"
+            )
+        try:
+            return LocalMouseClient(monitor=monitor)
+        except Exception:
+            if monitor is not None:
+                monitor.stop()
+            raise
 
     def close(self) -> None:
         if self._client is not None:
@@ -367,7 +401,7 @@ class KmboxController:
         if dx == 0 and dy == 0:
             state.record_command((0, 0), now)
             return (0, 0)
-        move = self._client.enc_move if self.device_config.encrypted else self._client.move
+        move = self._send_method()
         started = time.perf_counter()
         try:
             move(dx, dy)
@@ -379,6 +413,17 @@ class KmboxController:
             self.last_send_ms = (time.perf_counter() - started) * 1000.0
         state.record_command((dx, dy), started)
         return (dx, dy)
+
+    def _send_method(self):
+        """发位移用哪个方法。每次现取而不是在 connect 里定下来: 测试和热路径上
+        都有直接换 _client 的用法, 定死的话换了客户端还在调旧的。
+
+        encrypted 是 KMBox 的配置。选 SendInput 时它不能再来挑方法 —— 它默认是
+        true, 会去调一个 SendInput 客户端根本没有的 enc_move。
+        """
+        if self.output != "sendinput" and self.device_config.encrypted:
+            return self._client.enc_move
+        return self._client.move
 
     def _resolve_active_profile(self) -> int | None:
         if self._client is None:

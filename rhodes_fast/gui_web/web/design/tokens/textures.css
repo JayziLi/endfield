@@ -1,0 +1,43 @@
+/* ENDFIELD UI — 装饰层 / decor layer.
+   The system ships NO photographic or illustrated art (see readme, ART & DECOR).
+   Richness comes from procedural industrial texture instead: plot grids,
+   perforation, hatching, hazard stripes, corner brackets and watermark type.
+   Every texture is drawn with currentColor so one class works on ink, paper
+   and signal grounds alike — set opacity, not colour. */
+:root{
+  /* Texture opacities — the whole decor layer is tuned from these four. */
+  --tex-faint:.06; /* @kind other */
+  --tex-quiet:.10; /* @kind other */
+  --tex-normal:.14; /* @kind other */
+  --tex-loud:.22; /* @kind other */
+
+  /* Pitches */
+  --tex-pitch-fine:8px;
+  --tex-pitch-plot:32px;
+  --tex-pitch-perf:10px;
+  --tex-pitch-hatch:7px;
+
+  /* Bracket geometry */
+  --bracket-len:16px;
+  --bracket-weight:2px;
+  --bracket-inset:8px;
+
+  /* Hazard bar */
+  --hazard-h:6px;
+  --hazard-pitch:7px;
+
+  /* Watermark type */
+  --watermark-opacity:.07; /* @kind other */
+  --watermark-opacity-light:.045; /* @kind other */  /* ink type on paper/signal reads heavier */
+  --watermark-size:clamp(72px,20vw,190px); /* @kind other */
+  --watermark-size-sm:clamp(40px,8vw,68px); /* @kind other */
+
+  /* Rail spine watermark */
+  --rail-wm-size:66px; /* @kind other */
+  --rail-wm-opacity:.075; /* @kind other */
+  --rail-wm-tracking:.02em; /* @kind other */
+
+  /* Plate vignette — keeps caption text legible over any drop-in art. */
+  --plate-vignette:linear-gradient(to top,rgba(16,17,16,.82) 0%,rgba(16,17,16,.30) 42%,rgba(16,17,16,0) 72%); /* @kind other */
+  --plate-filter:grayscale(1) contrast(1.08) brightness(.92); /* @kind other */
+}

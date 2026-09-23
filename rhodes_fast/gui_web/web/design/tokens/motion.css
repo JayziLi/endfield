@@ -1,0 +1,23 @@
+/* ENDFIELD UI — motion. Mechanical, short, no bounce, no scale-up.
+   Machines snap; they do not spring. */
+:root{
+  --dur-instant:60ms; /* @kind other */
+  --dur-fast:110ms; /* @kind other */   /* hover, press, toggle */
+  --dur:180ms; /* @kind other */        /* tab switch, panel swap */
+  --dur-slow:280ms; /* @kind other */   /* overlay in/out */
+  --dur-sweep:1200ms; /* @kind other */ /* scanning / loading sweeps */
+
+  --ease-mech:cubic-bezier(.2,0,0,1); /* @kind other */      /* default: fast out, hard settle */
+  --ease-out:cubic-bezier(.16,1,.3,1); /* @kind other */
+  --ease-in:cubic-bezier(.7,0,.84,0); /* @kind other */
+  --ease-linear:linear; /* @kind other */                     /* telemetry, sweeps, blinks */
+
+  --transition-control:background-color var(--dur-fast) var(--ease-mech),color var(--dur-fast) var(--ease-mech),border-color var(--dur-fast) var(--ease-mech); /* @kind other */
+  --transition-move:transform var(--dur) var(--ease-mech); /* @kind other */
+}
+@keyframes ef-blink{0%,49%{opacity:1}50%,100%{opacity:.15}}
+@keyframes ef-sweep{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+@keyframes ef-ticker{0%{opacity:.35}50%{opacity:1}100%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){
+  :root{--dur-instant:0ms; /* @kind other */ --dur-fast:0ms; /* @kind other */ --dur:0ms; /* @kind other */ --dur-slow:0ms /* @kind other */}
+}

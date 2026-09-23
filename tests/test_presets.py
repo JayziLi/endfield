@@ -43,6 +43,8 @@ def _config(base: Path) -> AppConfig:
         udp=replace(config.udp, host="192.0.2.164", port=4466, width=416, height=384, fifo_packets=99),
         obs=replace(config.obs, host="10.0.0.5", port=4460, password="obs-pass", source_name="游戏画面"),
         kmbox=replace(config.kmbox, enabled=True, host="10.9.8.7", port=8810, uuid="ABCD1234", monitor_port=6001),
+        desktop=replace(config.desktop, backend="winrt", monitor=1, width=288, height=256),
+        mouse=replace(config.mouse, output="sendinput"),
         aim_profile_1=AimProfileConfig(
             enabled=True,
             trigger="side2",
@@ -98,6 +100,8 @@ class RoundTripTests(_TempBase):
             ("udp", ("host", "port", "width", "height")),
             ("obs", ("host", "port", "password", "source_name")),
             ("kmbox", ("enabled", "host", "port", "uuid")),
+            ("desktop", ("backend", "monitor", "width", "height")),
+            ("mouse", ("output",)),
         ):
             for key in keys:
                 with self.subTest(section=section, key=key):
@@ -108,11 +112,26 @@ class RoundTripTests(_TempBase):
     def test_only_what_the_window_can_edit_is_stored(self) -> None:
         # 超时、缓冲区这些界面上没有的高级项留在 settings.txt, 不跟着预设来回换。
         payload = json.loads(dump_preset(self.preset, self.base))
-        self.assertEqual(set(payload), {"format", "model", "input", "udp", "obs", "kmbox", "aim_profiles"})
+        self.assertEqual(
+            set(payload), {"format", "model", "input", "udp", "obs", "kmbox", "desktop", "mouse", "aim_profiles"}
+        )
         self.assertEqual(set(payload["input"]), {"mode"})
         self.assertEqual(set(payload["udp"]), {"host", "port", "width", "height"})
         self.assertEqual(set(payload["obs"]), {"host", "port", "password", "source_name"})
         self.assertEqual(set(payload["kmbox"]), {"enabled", "host", "port", "uuid"})
+        self.assertEqual(set(payload["desktop"]), {"backend", "monitor", "width", "height"})
+        self.assertEqual(set(payload["mouse"]), {"output"})
+
+    def test_presets_saved_before_the_single_pc_mode_still_load(self) -> None:
+        """老预设里没有 desktop 和 mouse 两节。升级之后打不开存好的预设, 等于把
+        用户攒下的每一套游戏配置都作废了。缺了就按默认值: 移动还是 KMBox。"""
+        payload = json.loads(dump_preset(self.preset, self.base))
+        payload.pop("desktop")
+        payload.pop("mouse")
+        loaded = parse_preset(json.dumps(payload), self.base)
+        self.assertEqual(loaded.mouse.output, "kmbox")
+        self.assertEqual(loaded.desktop.backend, "dxgi")
+        self.assertEqual((loaded.desktop.width, loaded.desktop.height), (320, 320))
 
     def test_the_model_path_is_stored_relative_to_the_program_folder(self) -> None:
         payload = json.loads(dump_preset(self.preset, self.base))
@@ -186,6 +205,13 @@ class ParseRejectsTests(_TempBase):
             "kmbox enabled as text": edit(lambda p: p["kmbox"].update(enabled="yes")),
             "kmbox port fractional": edit(lambda p: p["kmbox"].update(port=8808.5)),
             "kmbox uuid as number": edit(lambda p: p["kmbox"].update(uuid=1234)),
+            "desktop as list": edit(lambda p: p.update(desktop=[1])),
+            "unknown desktop backend": edit(lambda p: p["desktop"].update(backend="gdi")),
+            "negative monitor": edit(lambda p: p["desktop"].update(monitor=-1)),
+            "monitor as text": edit(lambda p: p["desktop"].update(monitor="0")),
+            "desktop width zero": edit(lambda p: p["desktop"].update(width=0)),
+            "mouse as text": edit(lambda p: p.update(mouse="kmbox")),
+            "unknown mouse output": edit(lambda p: p["mouse"].update(output="arduino")),
         }
         for label, payload in cases.items():
             with self.subTest(label):
@@ -367,6 +393,10 @@ class SameSettingsTests(_TempBase):
             "kmbox enabled": replace(self.preset, kmbox=replace(self.preset.kmbox, enabled=False)),
             "kmbox port": replace(self.preset, kmbox=replace(self.preset.kmbox, port=8808)),
             "kmbox uuid": replace(self.preset, kmbox=replace(self.preset.kmbox, uuid="FFFF0000")),
+            "desktop backend": replace(self.preset, desktop=replace(self.preset.desktop, backend="dxgi")),
+            "desktop monitor": replace(self.preset, desktop=replace(self.preset.desktop, monitor=0)),
+            "desktop size": replace(self.preset, desktop=replace(self.preset.desktop, height=320)),
+            "mouse output": replace(self.preset, mouse=replace(self.preset.mouse, output="kmbox")),
         }
         for label, other in cases.items():
             with self.subTest(label):

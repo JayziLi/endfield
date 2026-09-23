@@ -1,0 +1,995 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Endfield</title>
+<link rel="stylesheet" href="design/styles.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div class="ef-app">
+
+  <!-- 无边框窗口自己画的标题栏。可拖区只盖到窗口按钮左边为止:
+       pywebview 把 mousedown 挂在 .pywebview-drag-region 上, 而子元素的
+       mousedown 会冒泡 —— 整条挂上去的话点按钮就变成拖窗了。 -->
+  <header class="ef-titlebar">
+    <div class="ef-titlebar__drag pywebview-drag-region" id="titlebar-drag">
+      <span class="ef-titlebar__mark">
+        <span class="ef-titlebar__slash">//</span>
+        <span class="ef-titlebar__name">Endfield Vision</span>
+      </span>
+      <span class="ef-titlebar__meta" id="titlebar-meta">v1.3.0</span>
+    </div>
+    <button class="ef-titlebar__btn" type="button" aria-label="最小化" data-window="minimize"></button>
+    <button class="ef-titlebar__btn" type="button" aria-label="最大化" data-window="maximize"></button>
+    <button class="ef-titlebar__btn ef-titlebar__btn--close" type="button" aria-label="关闭" data-window="close"></button>
+  </header>
+
+  <div class="ef-app__body">
+
+    <nav class="ef-rail" aria-label="主导航">
+      <div class="ef-rail__deco" aria-hidden="true">
+        <span class="ef-rail__spine"></span>
+        <p class="ef-rail__wm">ENDFIELD</p>
+      </div>
+
+      <div class="ef-rail__items" id="rail-items">
+        <button class="ef-railitem ef-railitem--active" type="button" data-section="01" data-icon="box">
+          <span class="ef-railitem__icon"></span>
+          <span class="ef-railitem__idx">01</span>
+          <span class="ef-railitem__label">运行设置</span>
+          <span class="ef-railitem__rule" aria-hidden="true"></span>
+        </button>
+        <button class="ef-railitem" type="button" data-section="02" data-icon="crosshair">
+          <span class="ef-railitem__icon"></span>
+          <span class="ef-railitem__idx">02</span>
+          <span class="ef-railitem__label">识别与控制</span>
+          <span class="ef-railitem__rule" aria-hidden="true"></span>
+        </button>
+        <button class="ef-railitem" type="button" data-section="03" data-icon="layout-grid">
+          <span class="ef-railitem__icon"></span>
+          <span class="ef-railitem__idx">03</span>
+          <span class="ef-railitem__label">算法库</span>
+          <span class="ef-railitem__rule" aria-hidden="true"></span>
+        </button>
+        <button class="ef-railitem" type="button" data-section="04" data-icon="monitor-play">
+          <span class="ef-railitem__icon"></span>
+          <span class="ef-railitem__idx">04</span>
+          <span class="ef-railitem__label">实时预览</span>
+          <span class="ef-railitem__rule" aria-hidden="true"></span>
+        </button>
+      </div>
+
+      <div class="ef-rail__foot">
+        <span class="ef-railitem ef-railitem--quiet" data-icon="file-text">
+          <span class="ef-railitem__icon"></span>
+          <span class="ef-railitem__label">说明见 README</span>
+        </span>
+      </div>
+    </nav>
+
+    <main class="ef-app__main">
+
+      <div class="ef-section" id="section-header">
+        <span class="ef-section__idx" id="section-index">01</span>
+        <span class="ef-section__text">
+          <span class="ef-section__title" id="section-title">运行设置</span>
+          <span class="ef-section__en" id="section-en">RUNTIME SETTINGS</span>
+        </span>
+        <!-- 预设条。跨面板的全局操作（一份预设同时决定 01 和 02 两屏的值），
+             所以跟 SectionHeader 在一起，而不是塞进某一屏的面板里。
+             预设下拉带 data-lock-while-running：载入预设会换模型，而模型只在
+             启动时读一次。保存/另存为不锁 —— 边打边调好了，正该当场存下来。 -->
+        <span class="ef-section__aside ef-presetbar">
+          <span class="ef-meta">// PRESET</span>
+          <span class="ef-select ef-presetbar__pick">
+            <select class="ef-select__el" id="preset-select" data-lock-while-running></select>
+            <span class="ef-select__caret" aria-hidden="true"></span>
+          </span>
+          <button class="ef-btn ef-btn--sm ef-btn--outline" type="button" id="preset-save">保存</button>
+          <button class="ef-btn ef-btn--sm ef-btn--outline" type="button" id="preset-save-as">另存为…</button>
+          <button class="ef-btn ef-btn--sm ef-btn--danger" type="button" id="preset-delete" disabled>删除</button>
+        </span>
+      </div>
+
+      <div class="ef-screens" id="screens">
+        <!-- 控件到字段的绑定全在 data-field 上，forms.js 扫一遍接上。
+             字段名就是 FormState 的字段名，对不上会在运行状态里报出来。 -->
+        <section class="ef-screen" data-screen="01">
+
+          <div class="ef-panel">
+            <div class="ef-panel__head">
+              <span class="ef-panel__bar" aria-hidden="true"></span>
+              <span class="ef-panel__title">模型</span>
+              <span class="ef-panel__sub">MODEL</span>
+            </div>
+            <div class="ef-panel__body">
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">ONNX 模型</span>
+                  <span class="ef-input">
+                    <input class="ef-input__el" type="text" data-field="model_path"
+                           data-lock-while-running>
+                  </span>
+                  <!-- 原生对话框。HTML 的文件输入框只给一个假路径，
+                       而我们要往 settings.txt 里写真实路径。 -->
+                  <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                          id="browse-model" data-lock-while-running>浏览…</button>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">加速方式</span>
+                  <span class="ef-select">
+                    <select class="ef-select__el" data-field="provider" data-choices="provider"
+                            data-lock-while-running></select>
+                    <span class="ef-select__caret" aria-hidden="true"></span>
+                  </span>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <label class="ef-check">
+                    <input type="checkbox" data-field="cuda_graph">
+                    <span class="ef-check__box" aria-hidden="true"></span>
+                    <span class="ef-check__label">启用 CUDA Graph（TensorRT 低延迟）</span>
+                  </label>
+                  <label class="ef-check">
+                    <input type="checkbox" data-field="gpu_preprocess">
+                    <span class="ef-check__box" aria-hidden="true"></span>
+                    <span class="ef-check__label">启用 GPU 预处理（TensorRT）</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ef-panel">
+            <div class="ef-panel__head">
+              <span class="ef-panel__bar" aria-hidden="true"></span>
+              <span class="ef-panel__title">画面输入</span>
+              <span class="ef-panel__sub">VIDEO INPUT</span>
+            </div>
+            <div class="ef-panel__body">
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">输入方式</span>
+                  <span class="ef-select">
+                    <select class="ef-select__el" data-field="input_mode"
+                            data-choices="input_mode"></select>
+                    <span class="ef-select__caret" aria-hidden="true"></span>
+                  </span>
+                </div>
+              </div>
+
+              <!-- 三组按输入方式互斥显示。都留在 DOM 里而不是重建：切回来时
+                   用户填过的值还在。[hidden] 的 display:none 在 app.css 里写回来了。 -->
+              <div class="ef-inputgroup" id="udp-panel">
+                <div class="ef-field">
+                  <div class="ef-field__row">
+                    <span class="ef-field__label">监听地址</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="text" data-field="udp_host">
+                    </span>
+                    <span class="ef-field__label ef-field__label--tight">端口</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="number" data-field="udp_port">
+                    </span>
+                  </div>
+                </div>
+                <div class="ef-field">
+                  <div class="ef-field__row">
+                    <span class="ef-field__label">处理尺寸</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="number" data-field="udp_width">
+                    </span>
+                    <span class="ef-meta">×</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="number" data-field="udp_height">
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ef-inputgroup" id="obs-panel" hidden>
+                <div class="ef-field">
+                  <div class="ef-field__row">
+                    <span class="ef-field__label">OBS 地址</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="text" data-field="obs_host">
+                    </span>
+                    <span class="ef-field__label ef-field__label--tight">端口</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="number" data-field="obs_port">
+                    </span>
+                  </div>
+                </div>
+                <div class="ef-field">
+                  <div class="ef-field__row">
+                    <span class="ef-field__label">密码</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="password" data-field="obs_password">
+                    </span>
+                    <span class="ef-field__label ef-field__label--tight">来源名称</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="text" data-field="obs_source">
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 本机屏幕：单机模式。抓所选显示器正中央那一块，准心要在屏幕中央
+                   （游戏全屏或无边框铺满那块屏）。 -->
+              <div class="ef-inputgroup" id="desktop-panel" hidden>
+                <div class="ef-field">
+                  <div class="ef-field__row">
+                    <span class="ef-field__label">采集方式</span>
+                    <span class="ef-select">
+                      <select class="ef-select__el" data-field="desktop_backend"
+                              data-choices="desktop_backend"></select>
+                      <span class="ef-select__caret" aria-hidden="true"></span>
+                    </span>
+                  </div>
+                </div>
+                <div class="ef-field">
+                  <div class="ef-field__row">
+                    <span class="ef-field__label">显示器编号</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="number" min="0" data-field="desktop_monitor">
+                    </span>
+                    <span class="ef-field__label ef-field__label--tight">采集尺寸</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="number" min="1" data-field="desktop_width">
+                    </span>
+                    <span class="ef-meta">×</span>
+                    <span class="ef-input">
+                      <input class="ef-input__el" type="number" min="1" data-field="desktop_height">
+                    </span>
+                  </div>
+                </div>
+                <!-- 两个后端抓的都是合成之后的整块屏幕：DXcam 的 WGC 后端也只收
+                     显示器编号，不按窗口抓。 -->
+                <p class="ef-meta">// 抓所选屏幕正中央这一块。本窗口和放大预览别挡在那块屏的正中央，会被一起抓进去当成游戏画面</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="ef-panel">
+            <div class="ef-panel__head">
+              <span class="ef-panel__bar" aria-hidden="true"></span>
+              <span class="ef-panel__title">移动输出</span>
+              <span class="ef-panel__sub">MOUSE OUTPUT</span>
+            </div>
+            <div class="ef-panel__body">
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">输出方式</span>
+                  <span class="ef-select">
+                    <select class="ef-select__el" data-field="mouse_output"
+                            data-choices="mouse_output"></select>
+                    <span class="ef-select__caret" aria-hidden="true"></span>
+                  </span>
+                </div>
+              </div>
+
+              <!-- SendInput 注入的事件带 LLMHF_INJECTED 标记，任何装了低级鼠标钩子
+                   的程序都看得到。这是它的固有属性，选的那一刻就该知道。 -->
+              <p class="ef-meta" id="sendinput-note" hidden>// SendInput 发出的移动带有系统的「注入」标记，其他程序可以识别出来</p>
+
+              <!-- 「启用 KMBox 控制」也在组里：它只管 KMBox，放在外面看起来就像
+                   SendInput 的总开关。 -->
+              <div class="ef-inputgroup" id="kmbox-fields">
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <label class="ef-check">
+                    <input type="checkbox" data-field="kmbox_enabled">
+                    <span class="ef-check__box" aria-hidden="true"></span>
+                    <span class="ef-check__label">启用 KMBox 控制</span>
+                  </label>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">设备地址</span>
+                  <span class="ef-input">
+                    <input class="ef-input__el" type="text" data-field="kmbox_host">
+                  </span>
+                  <span class="ef-field__label ef-field__label--tight">端口</span>
+                  <span class="ef-input">
+                    <input class="ef-input__el" type="number" data-field="kmbox_port">
+                  </span>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">UUID</span>
+                  <!-- 明文，跟旧界面一致（用户明确决定）。顺手做成密码框是个
+                       很容易犯的「好心」—— 而它会让用户核对不了设备。 -->
+                  <span class="ef-input">
+                    <input class="ef-input__el" type="text" data-field="kmbox_uuid">
+                  </span>
+                </div>
+              </div>
+              </div>
+            </div>
+          </div>
+
+        </section>
+
+        <section class="ef-screen" data-screen="02" hidden>
+
+          <div class="ef-detectionrow">
+            <div class="ef-panel">
+              <div class="ef-panel__head">
+                <span class="ef-panel__bar" aria-hidden="true"></span>
+                <span class="ef-panel__title">模型输出</span>
+                <span class="ef-panel__sub">MODEL OUTPUT</span>
+              </div>
+              <div class="ef-panel__body">
+                <div class="ef-field">
+                  <div class="ef-field__row">
+                    <span class="ef-field__label">输出格式</span>
+                    <span class="ef-select">
+                      <select class="ef-select__el" data-field="output_format"
+                              data-choices="output_format"></select>
+                      <span class="ef-select__caret" aria-hidden="true"></span>
+                    </span>
+                    <span class="ef-field__label ef-field__label--tight">运行信息语言</span>
+                    <span class="ef-select">
+                      <select class="ef-select__el" data-field="log_language"
+                              data-choices="language"></select>
+                      <span class="ef-select__caret" aria-hidden="true"></span>
+                    </span>
+                  </div>
+                </div>
+
+                <!-- 滑条的范围逐字照抄旧界面。自己定的话手感就变了，而且是悄悄
+                     变的：同一个位置对应的数不一样。 -->
+                <div class="ef-field">
+                  <div class="ef-field__row">
+                    <span class="ef-field__label">置信度</span>
+                    <div class="ef-slider">
+                      <div class="ef-slider__main">
+                        <div class="ef-slider__rail">
+                          <div class="ef-slider__track" aria-hidden="true"></div>
+                          <div class="ef-slider__fill" aria-hidden="true"></div>
+                          <div class="ef-slider__thumb" aria-hidden="true"></div>
+                          <input class="ef-slider__input" type="range" data-field="confidence"
+                                 min="0.05" max="0.95" step="0.005" aria-label="置信度">
+                        </div>
+                      </div>
+                      <div class="ef-slider__value">
+                        <span data-readout="confidence" data-digits="3">0.000</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="ef-field">
+                  <div class="ef-field__row">
+                    <span class="ef-field__label">NMS IoU</span>
+                    <div class="ef-slider">
+                      <div class="ef-slider__main">
+                        <div class="ef-slider__rail">
+                          <div class="ef-slider__track" aria-hidden="true"></div>
+                          <div class="ef-slider__fill" aria-hidden="true"></div>
+                          <div class="ef-slider__thumb" aria-hidden="true"></div>
+                          <input class="ef-slider__input" type="range" data-field="iou"
+                                 min="0.05" max="0.95" step="0.005" aria-label="NMS IoU">
+                        </div>
+                      </div>
+                      <div class="ef-slider__value">
+                        <span data-readout="iou" data-digits="3">0.000</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 系统状态。三盏灯由 app.js 的 setLamps 驱动，状态从管线打出来的
+                 每一行里读（gui_web/lamps.py）。
+                 KMBox 那盏原来永远写着「未验证」，依据是「运行时管线只打配置里的
+                 地址，不报连没连上」——那个判断不对：连不上时 controller.connect()
+                 会抛异常，管线当场死掉，所以「输入：… | KMBox：…」那条横幅能被打
+                 出来本身就是回执。信号在顺序里，不在字面上。 -->
+            <div class="ef-panel">
+              <div class="ef-panel__head">
+                <span class="ef-panel__bar" aria-hidden="true"></span>
+                <span class="ef-panel__title">系统状态</span>
+                <span class="ef-panel__sub">SYSTEM STATUS</span>
+              </div>
+              <div class="ef-panel__body">
+                <span class="ef-lamp ef-lamp--off" id="lamp-stream">
+                  <span class="ef-lamp__frame" aria-hidden="true"><span class="ef-lamp__dot"></span></span>
+                  <span class="ef-lamp__text">
+                    <span class="ef-lamp__title ef-lamp__title--cjk">视频流</span>
+                    <span class="ef-lamp__sub ef-lamp__sub--cjk" id="lamp-stream-sub">未启动</span>
+                  </span>
+                </span>
+                <span class="ef-lamp ef-lamp--off" id="lamp-model">
+                  <span class="ef-lamp__frame" aria-hidden="true"><span class="ef-lamp__dot"></span></span>
+                  <span class="ef-lamp__text">
+                    <span class="ef-lamp__title ef-lamp__title--cjk">模型</span>
+                    <span class="ef-lamp__sub ef-lamp__sub--cjk" id="lamp-model-sub">未加载</span>
+                  </span>
+                </span>
+                <span class="ef-lamp ef-lamp--off" id="lamp-kmbox">
+                  <span class="ef-lamp__frame" aria-hidden="true"><span class="ef-lamp__dot"></span></span>
+                  <span class="ef-lamp__text">
+                    <span class="ef-lamp__title" id="lamp-kmbox-title">KMBox</span>
+                    <span class="ef-lamp__sub ef-lamp__sub--cjk" id="lamp-kmbox-sub">未验证</span>
+                  </span>
+                </span>
+                <p class="ef-meta">// 启动后自动更新；不启动也可以按「测试输入」单独验一次</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 两套控制方案。左右对称，data-field 的下标是唯一的区别 ——
+               写错的症状是「调方案 1 结果方案 2 变了」，而两栏长得一模一样。 -->
+          <div class="ef-profilerow">
+          <div class="ef-panel" id="profile-0">
+            <div class="ef-panel__head">
+              <span class="ef-panel__bar" aria-hidden="true"></span>
+              <span class="ef-panel__title">控制方案 1</span>
+              <span class="ef-panel__sub">PROFILE 1</span>
+              <span class="ef-panel__aside">
+                <label class="ef-check">
+                  <input type="checkbox" data-field="profiles.0.enabled">
+                  <span class="ef-check__box" aria-hidden="true"></span>
+                  <span class="ef-check__label">启用此方案</span>
+                </label>
+              </span>
+            </div>
+            <div class="ef-panel__body">
+
+              <!-- 控制算法单独一块：它决定准心怎么动，是这一栏里最该先看到的
+                   东西。照旧界面把它框起来的做法。 -->
+              <div class="ef-panel ef-panel--sunken ef-algobox">
+                <div class="ef-panel__body">
+                  <div class="ef-field">
+                    <div class="ef-field__row">
+                      <span class="ef-field__label">控制算法</span>
+                      <span class="ef-select">
+                        <select class="ef-select__el" data-choices="algorithm"
+                                data-algorithm="0"></select>
+                        <span class="ef-select__caret" aria-hidden="true"></span>
+                      </span>
+                    </div>
+                  </div>
+                  <!-- 参数按 Param 契约动态生成。写死的话，用户从算法库导入
+                       一个自己写的算法，参数一个都出不来。 -->
+                  <div class="ef-params" id="params-0"></div>
+                  <div class="ef-field__row ef-algobox__share">
+                    <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                            data-tuning="export" data-profile="0">导出调校…</button>
+                    <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                            data-tuning="import" data-profile="0">导入调校…</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">触发方式</span>
+                  <span class="ef-select">
+                    <select class="ef-select__el" data-field="profiles.0.trigger"
+                            data-choices="trigger"></select>
+                    <span class="ef-select__caret" aria-hidden="true"></span>
+                  </span>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">目标标签</span>
+                  <span class="ef-select">
+                    <select class="ef-select__el" data-field="profiles.0.target_class"
+                            data-choices="target_class"></select>
+                    <span class="ef-select__caret" aria-hidden="true"></span>
+                  </span>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">框内位置（顶部 0%）</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.0.aim_position"
+                               min="0" max="100" step="1" aria-label="框内位置（顶部 0%）">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.0.aim_position" data-digits="0">—</span>
+                    <span class="ef-slider__unit">%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">视野半径</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.0.fov"
+                               min="10" max="320" step="1" aria-label="视野半径">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.0.fov" data-digits="0">—</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">P 最小值</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.0.kp_min"
+                               min="0" max="0.3" step="0.001" aria-label="P 最小值">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.0.kp_min" data-digits="3">—</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">P 最大值</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.0.kp_max"
+                               min="0" max="0.3" step="0.001" aria-label="P 最大值">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.0.kp_max" data-digits="3">—</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">P 增长斜率</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.0.kp_growth"
+                               min="0" max="0.5" step="0.001" aria-label="P 增长斜率">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.0.kp_growth" data-digits="3">—</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="ef-panel" id="profile-1">
+            <div class="ef-panel__head">
+              <span class="ef-panel__bar" aria-hidden="true"></span>
+              <span class="ef-panel__title">控制方案 2</span>
+              <span class="ef-panel__sub">PROFILE 2</span>
+              <span class="ef-panel__aside">
+                <label class="ef-check">
+                  <input type="checkbox" data-field="profiles.1.enabled">
+                  <span class="ef-check__box" aria-hidden="true"></span>
+                  <span class="ef-check__label">启用此方案</span>
+                </label>
+              </span>
+            </div>
+            <div class="ef-panel__body">
+
+              <!-- 控制算法单独一块：它决定准心怎么动，是这一栏里最该先看到的
+                   东西。照旧界面把它框起来的做法。 -->
+              <div class="ef-panel ef-panel--sunken ef-algobox">
+                <div class="ef-panel__body">
+                  <div class="ef-field">
+                    <div class="ef-field__row">
+                      <span class="ef-field__label">控制算法</span>
+                      <span class="ef-select">
+                        <select class="ef-select__el" data-choices="algorithm"
+                                data-algorithm="1"></select>
+                        <span class="ef-select__caret" aria-hidden="true"></span>
+                      </span>
+                    </div>
+                  </div>
+                  <!-- 参数按 Param 契约动态生成。写死的话，用户从算法库导入
+                       一个自己写的算法，参数一个都出不来。 -->
+                  <div class="ef-params" id="params-1"></div>
+                  <div class="ef-field__row ef-algobox__share">
+                    <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                            data-tuning="export" data-profile="1">导出调校…</button>
+                    <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                            data-tuning="import" data-profile="1">导入调校…</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">触发方式</span>
+                  <span class="ef-select">
+                    <select class="ef-select__el" data-field="profiles.1.trigger"
+                            data-choices="trigger"></select>
+                    <span class="ef-select__caret" aria-hidden="true"></span>
+                  </span>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">目标标签</span>
+                  <span class="ef-select">
+                    <select class="ef-select__el" data-field="profiles.1.target_class"
+                            data-choices="target_class"></select>
+                    <span class="ef-select__caret" aria-hidden="true"></span>
+                  </span>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">框内位置（顶部 0%）</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.1.aim_position"
+                               min="0" max="100" step="1" aria-label="框内位置（顶部 0%）">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.1.aim_position" data-digits="0">—</span>
+                    <span class="ef-slider__unit">%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">视野半径</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.1.fov"
+                               min="10" max="320" step="1" aria-label="视野半径">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.1.fov" data-digits="0">—</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">P 最小值</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.1.kp_min"
+                               min="0" max="0.3" step="0.001" aria-label="P 最小值">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.1.kp_min" data-digits="3">—</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">P 最大值</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.1.kp_max"
+                               min="0" max="0.3" step="0.001" aria-label="P 最大值">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.1.kp_max" data-digits="3">—</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ef-field">
+                <div class="ef-field__row">
+                  <span class="ef-field__label">P 增长斜率</span>
+                  <div class="ef-slider">
+                    <div class="ef-slider__main">
+                      <div class="ef-slider__rail">
+                        <div class="ef-slider__track" aria-hidden="true"></div>
+                        <div class="ef-slider__fill" aria-hidden="true"></div>
+                        <div class="ef-slider__thumb" aria-hidden="true"></div>
+                        <input class="ef-slider__input" type="range" data-field="profiles.1.kp_growth"
+                               min="0" max="0.5" step="0.001" aria-label="P 增长斜率">
+                      </div>
+                    </div>
+                    <div class="ef-slider__value">
+                      <span data-readout="profiles.1.kp_growth" data-digits="3">—</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          </div>
+
+        </section>
+
+        <section class="ef-screen" data-screen="03" hidden>
+          <div class="ef-panel ef-librarywrap">
+            <div class="ef-panel__head">
+              <span class="ef-panel__bar" aria-hidden="true"></span>
+              <span class="ef-panel__title">算法库</span>
+              <span class="ef-panel__sub">ALGORITHM LIBRARY</span>
+              <span class="ef-panel__aside">
+                <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                        id="library-import">导入算法…</button>
+                <button class="ef-iconbtn ef-iconbtn--sm ef-iconbtn--quiet" type="button"
+                        id="library-refresh" aria-label="重新读取算法库"
+                        data-icon="refresh-cw"></button>
+              </span>
+            </div>
+            <div class="ef-panel__body">
+              <p class="ef-meta">// 这里列出所有能在控制方案里选的算法。导入别人写的 .py 之前会先让你看清楚它是什么</p>
+
+              <!-- 设计系统没有 Table（规格第 7 节的两个缺口之一），用基础类拼。
+                   选中行按规范是整行信号黄填充 + 前缘 2px ink 条：
+                   「Selection is a block, not an underline」。 -->
+              <div class="ef-library">
+                <div class="ef-libraryrow ef-libraryrow--head" id="library-head"></div>
+                <div class="ef-library__body" id="library-rows"></div>
+              </div>
+
+              <div class="ef-field__row ef-library__actions">
+                <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                        id="library-source" disabled>查看源码</button>
+                <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                        id="library-rename" disabled>重命名</button>
+                <button class="ef-btn ef-btn--sm ef-btn--danger" type="button"
+                        id="library-delete" disabled>删除</button>
+              </div>
+
+              <p class="ef-meta">// 内置算法随程序分发，不能改名也不能删除。刚导入的算法不用重启，在控制方案里直接选就行</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- 检测框、FOV 圈、准心和底部状态条都已经由子进程烧进 JPEG 了
+             (preview.py 的 render_preview)。这里只提供外壳: 垂直水印、底部的
+             telemetry 条、LIVE 徽标。不用 .ef-preview__box 再画一层 —— 那层的
+             坐标我们根本没有, 而且会是双重框。 -->
+        <section class="ef-screen" data-screen="04" hidden>
+
+          <!-- 这四个是运行期开关，不是配置：每次打开程序「画面」都是勾上的，
+               只有轨迹长度记住（config_to_form_state 那边就是这么填的）。
+               改了会写 .trail.json，管线每 0.25 秒读一次 —— 边跑边开关。 -->
+          <div class="ef-previewbar">
+            <label class="ef-check">
+              <input type="checkbox" data-field="preview_frame">
+              <span class="ef-check__box" aria-hidden="true"></span>
+              <span class="ef-check__label">画面</span>
+            </label>
+            <label class="ef-check">
+              <input type="checkbox" data-field="trail_enabled">
+              <span class="ef-check__box" aria-hidden="true"></span>
+              <span class="ef-check__label">轨迹</span>
+            </label>
+            <label class="ef-check" id="trail-optimal">
+              <input type="checkbox" data-field="trail_optimal_path">
+              <span class="ef-check__box" aria-hidden="true"></span>
+              <span class="ef-check__label">最优路径</span>
+            </label>
+            <span class="ef-field__label">轨迹长度</span>
+            <!-- 0.2 到 2.0 秒，出自 config.py 的 TRAIL_MIN_SECONDS / TRAIL_MAX_SECONDS。
+                 范围跟管线对不上的话，滑条能拖到的值会被那边再夹一次，
+                 而界面上显示的是夹之前的数。 -->
+            <div class="ef-slider ef-previewbar__slider" id="trail-length">
+              <div class="ef-slider__main"><div class="ef-slider__rail">
+                <div class="ef-slider__track" aria-hidden="true"></div>
+                <div class="ef-slider__fill" aria-hidden="true"></div>
+                <div class="ef-slider__thumb" aria-hidden="true"></div>
+                <input class="ef-slider__input" type="range" data-field="trail_seconds"
+                       min="0.2" max="2" step="0.1">
+              </div></div>
+              <div class="ef-slider__value">
+                <span data-readout="trail_seconds" data-digits="1" data-unit=" 秒">—</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="ef-panel ef-panel--flat ef-previewwrap">
+            <div class="ef-panel__head">
+              <span class="ef-panel__bar" aria-hidden="true"></span>
+              <span class="ef-panel__title">预览叠加层</span>
+              <span class="ef-panel__sub">PREVIEW OVERLAY</span>
+              <!-- 放大到一个独立的方形窗口（popups.py）。采集画面是 320x320 的
+                   正方形，方窗口正好铺满。那个窗口开着时，主窗口切走 04 屏或者
+                   最小化都不会停流 —— 放大看多半就是为了把主窗口收起来。 -->
+              <span class="ef-panel__aside">
+                <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                        id="preview-popout">放大预览</button>
+              </span>
+            </div>
+
+            <div class="ef-preview" id="preview">
+              <!-- 这里故意没有 src。/preview.mjpg 是一条不会结束的流, 写在标记里
+                   页面的 load 事件就永远不触发, pywebview 会认为窗口没起来, 之后
+                   每一次 evaluate_js 都抛异常 —— 界面看着正常, 但日志和数字一个都
+                   推不上去。流由 app.js 在切到 04 时接上。 -->
+              <img class="ef-preview__media" id="preview-media" alt="实时画面">
+              <div class="ef-preview__grain" aria-hidden="true"></div>
+
+              <div class="ef-preview__side" aria-hidden="true">
+                <p class="ef-preview__vert">Endfield Vision // local feed</p>
+              </div>
+
+              <div class="ef-preview__badge" id="preview-badge" hidden>
+                <i aria-hidden="true"></i>LIVE
+              </div>
+
+              <div class="ef-preview__tele">
+                <div><span>LATENCY</span><b id="tele-latency">—</b></div>
+                <div><span>TARGETS</span><b id="tele-targets">—</b></div>
+                <div><span>RES</span><b id="tele-res">—</b></div>
+              </div>
+
+              <div class="ef-preview__empty" id="preview-empty">未启动 · NO SIGNAL</div>
+            </div>
+          </div>
+
+          <div class="ef-metrics">
+            <div class="ef-metric ef-metric--sm">
+              <span class="ef-metric__label">采集帧率</span>
+              <span class="ef-metric__val"><span id="metric-capture" class="ef-num--idle">—</span><span class="ef-metric__unit">fps</span></span>
+            </div>
+            <div class="ef-metric ef-metric--sm">
+              <span class="ef-metric__label">处理帧率</span>
+              <span class="ef-metric__val"><span id="metric-processed" class="ef-num--idle">—</span><span class="ef-metric__unit">fps</span></span>
+            </div>
+            <div class="ef-metric ef-metric--sm">
+              <span class="ef-metric__label">推理耗时</span>
+              <span class="ef-metric__val"><span id="metric-infer" class="ef-num--idle">—</span><span class="ef-metric__unit">ms</span></span>
+            </div>
+            <div class="ef-metric ef-metric--sm">
+              <span class="ef-metric__label">丢帧</span>
+              <span class="ef-metric__val"><span id="metric-dropped" class="ef-num--idle">—</span><span class="ef-metric__unit">帧/秒</span></span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- 折起来是为了把高度让给预览画面（这台机器缩放 150%，默认窗口只有
+           744 CSS 像素高，04 屏的画面只分得到 125px）。折的是滚动的那一段，
+           下面那条固定状态行留着 —— 它只有 28px，而且正是折叠之后唯一还能看到
+           的实时数字。 -->
+      <div class="ef-panel ef-panel--flat ef-logwrap" id="logwrap">
+        <div class="ef-logwrap__head">
+          <span class="ef-panel__title">运行状态</span>
+          <span class="ef-panel__sub">RUNTIME LOG</span>
+          <span class="ef-logwrap__spacer"></span>
+          <button class="ef-iconbtn ef-iconbtn--sm ef-iconbtn--quiet" type="button"
+                  id="log-toggle" data-icon="chevron-down"
+                  aria-controls="runtime-log" aria-expanded="true"
+                  aria-label="折叠运行状态"></button>
+        </div>
+        <div class="ef-log" id="runtime-log" role="log" aria-live="polite"></div>
+        <!-- 管线每秒重复打的那两行不进上面的日志，刷新这一行。一秒两行往日志里
+             堆的话，一分钟就是 120 行数字，「模型已就绪」「KMBox 连不上」这种
+             只出现一次、真正要看的话早被顶出屏幕了。
+             完整的原文挂在 title 上：固定行放不下延迟的七个分项，而这个项目的
+             全部意义就在那几个数上。 -->
+        <div class="ef-statusline" id="runtime-status" title=""></div>
+      </div>
+
+      <!-- 动作行照旧界面 gui.py:629-648。三条测速都不建预览 socket，所以它们
+           走的是 Api 上单独的方法，不是 start()。 -->
+      <div class="ef-actions">
+        <button class="ef-btn ef-btn--outline" type="button" id="start-stop">
+          <span class="ef-btn__bar" aria-hidden="true"></span>
+          <span class="ef-btn__body">
+            <span class="ef-btn__code">ACT-01</span>
+            <span class="ef-btn__label" id="start-stop-label">启动系统</span>
+          </span>
+        </button>
+        <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                id="action-save">保存设置</button>
+        <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                id="action-check">测试输入</button>
+        <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                id="action-benchmark">模型测速</button>
+        <button class="ef-btn ef-btn--sm ef-btn--outline" type="button"
+                id="action-pipeline">管线测速</button>
+        <label class="ef-check">
+          <input type="checkbox" data-field="latency_log_enabled">
+          <span class="ef-check__box" aria-hidden="true"></span>
+          <span class="ef-check__label">记录延迟日志</span>
+        </label>
+        <span class="ef-actions__spacer"></span>
+        <span class="ef-tag ef-tag--outline ef-tag--mono" id="run-state">IDLE</span>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- 状态栏的读序: 普通文本是标签(暗), <b> 是值(亮) —— 那是 design 的
+       .ef-statusbar b 定的。标签在前, 跟设计稿一致。 -->
+  <footer class="ef-statusbar">
+    <span>INPUT <b id="status-input">—</b></span>
+    <span>MODEL <b id="status-model">—</b></span>
+    <span class="ef-statusbar__spacer"></span>
+    <span>FPS <b id="status-fps">—</b></span>
+    <span>延迟 <b id="status-latency">—</b></span>
+  </footer>
+
+
+  <!-- 模态框。设计系统没有 Dialog（规格第 7 节的两个缺口之一），用它的 token
+       自拼：遮罩 rgba(16,17,16,.72)，面板用 --shadow-overlay。
+       初始 hidden —— app.css 里必须把 [hidden] 的 display:none 写回来，
+       .ef-modal 和 .ef-field 都设了 display。 -->
+  <div class="ef-modal" id="modal" hidden>
+    <div class="ef-modal__scrim" aria-hidden="true"></div>
+    <div class="ef-modal__panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="ef-modal__head">
+        <span class="ef-panel__bar" aria-hidden="true"></span>
+        <span class="ef-panel__title" id="modal-title">标题</span>
+      </div>
+      <p class="ef-modal__message" id="modal-message"></p>
+      <div class="ef-field" id="modal-field" hidden>
+        <div class="ef-field__row">
+          <span class="ef-field__label">名称</span>
+          <span class="ef-input">
+            <input class="ef-input__el ef-input__el--text" type="text" id="modal-input">
+          </span>
+        </div>
+      </div>
+      <div class="ef-modal__actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="icons.js"></script>
+<script src="modal.js"></script>
+<script src="forms.js"></script>
+<script src="library.js"></script>
+<script src="presets.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

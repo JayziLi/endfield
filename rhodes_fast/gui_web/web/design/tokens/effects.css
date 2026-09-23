@@ -1,0 +1,70 @@
+/* ENDFIELD UI — geometry, the cut corner (切角) motif, rules and depth.
+   Radii are ZERO. Every "rounded" feel comes from a 45° corner cut instead. */
+:root{
+  --radius-none:0px;
+  --radius:0px;            /* there is no radius in this system. */
+
+  --notch-xs:4px;
+  --notch-sm:6px;
+  --notch:10px;            /* default cut on controls */
+  --notch-lg:14px;         /* panels, metric cards */
+  --notch-xl:22px;         /* full-bleed plates, preview frames */
+
+  /* Cut-corner clip paths. BR is the system default. */
+  --clip-br:polygon(0 0,100% 0,100% calc(100% - var(--notch)),calc(100% - var(--notch)) 100%,0 100%); /* @kind other */
+  --clip-tr:polygon(0 0,calc(100% - var(--notch)) 0,100% var(--notch),100% 100%,0 100%); /* @kind other */
+  --clip-bl:polygon(0 0,100% 0,100% 100%,var(--notch) 100%,0 calc(100% - var(--notch))); /* @kind other */
+  --clip-tl:polygon(var(--notch) 0,100% 0,100% 100%,0 100%,0 var(--notch)); /* @kind other */
+  --clip-br-tr:polygon(0 0,calc(100% - var(--notch)) 0,100% var(--notch),100% calc(100% - var(--notch)),calc(100% - var(--notch)) 100%,0 100%); /* @kind other */
+  --clip-diag:polygon(0 0,100% 0,100% calc(100% - var(--notch-lg)),calc(100% - var(--notch-lg)) 100%,0 100%); /* @kind other */
+  --clip-tag:polygon(0 0,100% 0,calc(100% - var(--notch)) 100%,0 100%); /* parallel tag / ribbon */
+  /* Pre-composed fixed-size cuts — use these on components so no
+     custom property has to be redeclared outside :root. */
+  --clip-br-xs:polygon(0 0,100% 0,100% calc(100% - 4px),calc(100% - 4px) 100%,0 100%); /* @kind other */
+  --clip-br-sm:polygon(0 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%); /* @kind other */
+  --clip-br-md:polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%); /* @kind other */
+  --clip-br-lg:polygon(0 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%); /* @kind other */
+  --clip-br-xl:polygon(0 0,100% 0,100% calc(100% - 22px),calc(100% - 22px) 100%,0 100%); /* @kind other */
+  --clip-tag-sm:polygon(0 0,100% 0,calc(100% - 6px) 100%,0 100%); /* @kind other */
+  --clip-tag-md:polygon(0 0,100% 0,calc(100% - 10px) 100%,0 100%); /* @kind other */
+  --clip-tag-lg:polygon(0 0,100% 0,calc(100% - 18px) 100%,0 100%); /* @kind other */
+
+  /* Rules */
+  --rule:1px solid var(--hairline); /* @kind other */
+  --rule-soft:1px solid var(--hairline-soft); /* @kind other */
+  --rule-strong:1px solid var(--border-strong); /* @kind other */
+  --rule-heavy:2px solid var(--border-strong); /* @kind other */
+  --rule-inverse:1px solid var(--hairline-inverse); /* @kind other */
+  --rule-dashed:1px dashed var(--structure-2); /* @kind other */
+
+  /* Depth: flat by default. Elevation only for things that float. */
+  --shadow-none:none;
+  --shadow-inset-field:inset 0 1px 0 rgba(16,17,16,.06);
+  --shadow-raise:0 1px 0 rgba(16,17,16,.08);
+  --shadow-overlay:0 24px 48px -16px rgba(16,17,16,.32),0 2px 0 rgba(16,17,16,.08);
+  --shadow-focus:0 0 0 2px var(--signal-2);
+  --shadow-focus-alarm:0 0 0 2px var(--alarm);
+
+  /* Blueprint / technical textures */
+  --grid-fine:linear-gradient(to right,rgba(16,17,16,.045) 1px,transparent 1px) 0 0/8px 8px,linear-gradient(to bottom,rgba(16,17,16,.045) 1px,transparent 1px) 0 0/8px 8px; /* @kind other */
+  --grid-plot:linear-gradient(to right,rgba(16,17,16,.06) 1px,transparent 1px) 0 0/32px 32px,linear-gradient(to bottom,rgba(16,17,16,.06) 1px,transparent 1px) 0 0/32px 32px; /* @kind other */
+  --hatch-45:repeating-linear-gradient(45deg,rgba(16,17,16,.10) 0 1px,transparent 1px 6px); /* @kind other */
+  --hatch-signal:repeating-linear-gradient(45deg,var(--signal-2) 0 6px,var(--ink-1) 6px 12px); /* @kind other */
+  --scanline:repeating-linear-gradient(to bottom,rgba(16,17,16,.05) 0 1px,transparent 1px 3px); /* @kind other */
+  --protect-bottom:linear-gradient(to top,rgba(16,17,16,.86) 0%,rgba(16,17,16,.45) 45%,transparent 100%); /* @kind other */
+
+  /* Material — micro-bevel, sheen and well. The system stays flat: these are
+     one-pixel light edges and sub-10% gradients, never drop shadows. */
+  --bevel-light:inset 0 1px 0 rgba(255,255,255,.62),inset 0 -1px 0 rgba(16,17,16,.07); /* @kind other */
+  --bevel-dark:inset 0 1px 0 rgba(241,241,235,.09),inset 0 -1px 0 rgba(0,0,0,.34); /* @kind other */
+  --bevel-signal:inset 0 1px 0 rgba(255,255,255,.34),inset 0 -1px 0 rgba(16,17,16,.16); /* @kind other */
+  --well:inset 0 2px 3px -2px rgba(16,17,16,.24),inset 0 1px 0 rgba(16,17,16,.06); /* @kind other */
+  --sheen-light:linear-gradient(180deg,rgba(255,255,255,.5),rgba(255,255,255,0) 54%); /* @kind other */
+  --sheen-dark:linear-gradient(180deg,rgba(241,241,235,.07),rgba(241,241,235,0) 46%); /* @kind other */
+  --sheen-signal:linear-gradient(180deg,rgba(255,255,255,.2),rgba(16,17,16,.07)); /* @kind other */
+  --grit-dark:radial-gradient(rgba(241,241,235,.5) .5px,transparent .6px) 0 0/3px 3px; /* @kind other */
+  --panel-vignette:radial-gradient(130% 100% at 50% -12%,rgba(255,255,255,.55),rgba(255,255,255,0) 62%); /* @kind other */
+
+  --blur-overlay:blur(6px); /* @kind other */
+  --blur-glass:blur(14px); /* @kind other */
+}

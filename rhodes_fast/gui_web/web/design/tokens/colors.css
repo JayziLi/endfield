@@ -1,0 +1,82 @@
+/* ENDFIELD UI — colour. Four declared brand values, everything else derived.
+   The palette is monochrome + one functional accent. Never add a second hue. */
+:root{
+  /* ---- Brand core (declared on spec sheet 01, §6 色彩与材质) ---- */
+  --ink:#101110;          /* 主文本 / 图形  — primary text & graphic blocks */
+  --paper:#F1F1EB;        /* 背景底色      — page ground, warm off-white */
+  --signal:#EBFF00;       /* 功能强调      — functional emphasis ONLY */
+  --structure:#BFC2BB;    /* 辅助元素      — auxiliary / inert structure */
+
+  /* ---- Ink ramp ---- */
+  --ink-0:#000000;        /* terminal ground */
+  --ink-1:#101110;
+  --ink-2:#1C1D1A;
+  --ink-3:#2A2B28;
+  --ink-4:#4C4D4A;
+  --ink-5:#6B6D67;
+
+  /* ---- Paper / structure ramp ---- */
+  --paper-1:#FAFAF6;
+  --paper-2:#F1F1EB;
+  --paper-3:#E6E7E1;
+  --paper-4:#DCDDD6;
+  --structure-1:#D8DAD4;
+  --structure-2:#BFC2BB;
+  --structure-3:#9A9C95;
+
+  /* ---- Signal ramp ---- */
+  --signal-1:#F6FF7A;
+  --signal-2:#EBFF00;
+  --signal-3:#C9D900;
+  --signal-tint:#F7FFC2;
+
+  /* ---- Alarm (危险操作 / 错误) ---- */
+  --alarm:#D9201C;
+  --alarm-strong:#B0100D;
+  --alarm-tint:#FBE6E5;
+
+  /* ---- Semantic text ---- */
+  --text-primary:var(--ink-1);
+  --text-secondary:var(--ink-5);
+  --text-muted:var(--structure-3);
+  /* Quiet but still AA at 10–11px on --paper-3 (6.84:1); --text-muted is decoration-only. */
+  --text-placeholder:var(--ink-4);
+  --text-inverse:var(--paper-2);
+  --text-inverse-dim:#8C8E88;
+  --text-accent:var(--ink-1);       /* ink on signal — never signal on paper */
+  --text-alarm:var(--alarm);
+  --text-link:var(--ink-1);
+  --text-link-hover:var(--ink-4);
+
+  /* ---- Semantic surfaces ---- */
+  --surface-page:var(--paper-2);
+  --surface-panel:var(--paper-1);
+  --surface-sunken:var(--paper-3);
+  --surface-field:#FFFFFF;
+  --surface-field-readonly:var(--paper-3);
+  --surface-inverse:var(--ink-1);
+  --surface-inverse-2:var(--ink-2);
+  --surface-terminal:var(--ink-0);
+  --surface-accent:var(--signal-2);
+  --surface-alarm:var(--alarm);
+  --surface-overlay:rgba(16,17,16,.72);
+  --surface-hover:rgba(16,17,16,.06);
+  --surface-press:rgba(16,17,16,.12);
+  --surface-hover-inverse:rgba(241,241,235,.10);
+
+  /* ---- Borders ---- */
+  --hairline:#C9CBC4;               /* 1px rules, panel dividers */
+  --hairline-soft:#DFE0DA;
+  --hairline-inverse:rgba(241,241,235,.18);
+  --border-strong:var(--ink-1);     /* outline buttons, framed fields */
+  --border-field:var(--structure-2);
+  --border-focus:var(--signal-2);
+  --border-alarm:var(--alarm);
+
+  /* ---- Status (状态系统) ---- */
+  --status-online:var(--signal-2);
+  --status-standby:var(--structure-2);
+  --status-connecting:transparent;  /* hollow square, ink border */
+  --status-error:var(--alarm);
+  --status-frame:var(--ink-1);      /* the [ ] bracket colour */
+}

@@ -49,6 +49,7 @@ class _Harness:
         trigger_active: bool = True,
         trail_settings_file: Path | None = None,
         kmbox_enabled: bool | None = None,
+        mouse_output: str | None = None,
         shows_frame: bool = True,
     ) -> None:
         frame = np.zeros((320, 320, 3), dtype=np.uint8)
@@ -119,6 +120,8 @@ class _Harness:
             config = load_config(_CONFIG, validate_model=False)
             if kmbox_enabled is not None:
                 config = replace(config, kmbox=replace(config.kmbox, enabled=kmbox_enabled))
+            if mouse_output is not None:
+                config = replace(config, mouse=replace(config.mouse, output=mouse_output))
             with (
                 patch("rhodes_fast.pipeline.YoloDetector", return_value=detector),
                 patch("rhodes_fast.pipeline.KmboxController", return_value=controller),
@@ -254,6 +257,13 @@ class PipelineTrailTests(unittest.TestCase):
 
         harness = _Harness([1])
         harness.run(kmbox_enabled=True)
+        self.assertTrue(harness.trail_overlay.available)
+
+    def test_with_sendinput_the_trail_is_available_without_kmbox(self) -> None:
+        """SendInput 模式下手的移动从 Raw Input 来, 不需要盒子。按 kmbox.enabled
+        判的话, 单机用户的轨迹永远写着「需要 KMBox」。"""
+        harness = _Harness([1])
+        harness.run(kmbox_enabled=False, mouse_output="sendinput")
         self.assertTrue(harness.trail_overlay.available)
 
     def test_a_finished_calibration_is_reported_in_the_log(self) -> None:

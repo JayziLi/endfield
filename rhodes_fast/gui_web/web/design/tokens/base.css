@@ -1,0 +1,22 @@
+/* ENDFIELD UI — element baseline. Applies to any page linking styles.css. */
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body{margin:0;background:var(--surface-page);color:var(--text-primary);font:var(--type-body);font-feature-settings:"tnum" 1}
+h1,h2,h3,h4,h5,h6{margin:0;font-family:var(--font-display);font-weight:var(--weight-black);letter-spacing:var(--tracking-display);line-height:var(--leading-tight)}
+h1{font-size:var(--text-display)}h2{font-size:var(--text-display-sm)}h3{font-size:var(--text-heading)}
+h4,h5,h6{font-family:var(--font-cjk);font-weight:var(--weight-bold);letter-spacing:var(--tracking-normal);font-size:var(--text-title)}
+p{margin:0 0 var(--space-5);text-wrap:pretty}
+a{color:var(--text-link);text-decoration:none;border-bottom:1px solid var(--structure-2);transition:var(--transition-control)}
+a:hover{color:var(--text-link-hover);border-bottom-color:var(--signal-2)}
+a:active{color:var(--ink-1);border-bottom-color:var(--ink-1)}
+code,pre,kbd{font-family:var(--font-mono);font-size:var(--text-caption)}
+hr{border:0;border-top:var(--rule);margin:var(--space-8) 0}
+::selection{background:var(--signal-2);color:var(--ink-1)}
+:focus-visible{outline:2px solid var(--signal-2);outline-offset:1px}
+button,input,select,textarea{font:inherit;color:inherit}
+input[type=number]::-webkit-inner-spin-button{opacity:.4}
+/* Scrollbars read as machined channels, not glossy pills. */
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:var(--paper-3)}
+*::-webkit-scrollbar-thumb{background:var(--structure-2);border:2px solid var(--paper-3)}
+*::-webkit-scrollbar-thumb:hover{background:var(--ink-4)}

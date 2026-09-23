@@ -1,0 +1,88 @@
+/* ENDFIELD UI — decor primitives. Texture layers use currentColor, so they
+   inherit the ground they sit on; tone is controlled by opacity only. */
+
+/* ---------- Texture layer (贴图层) ---------- */
+.ef-tex{position:absolute;inset:0;pointer-events:none;background-repeat:repeat}
+.ef-tex--fine{background-image:linear-gradient(to right,currentColor 1px,transparent 1px),linear-gradient(to bottom,currentColor 1px,transparent 1px);background-size:var(--tex-pitch-fine) var(--tex-pitch-fine);opacity:var(--tex-faint)}
+.ef-tex--plot{background-image:linear-gradient(to right,currentColor 1px,transparent 1px),linear-gradient(to bottom,currentColor 1px,transparent 1px);background-size:var(--tex-pitch-plot) var(--tex-pitch-plot);opacity:var(--tex-quiet)}
+.ef-tex--perf{background-image:radial-gradient(currentColor 1px,transparent 1.3px);background-size:var(--tex-pitch-perf) var(--tex-pitch-perf);opacity:var(--tex-normal)}
+.ef-tex--halftone{background-image:radial-gradient(currentColor 24%,transparent 25%);background-size:6px 6px;opacity:var(--tex-quiet)}
+.ef-tex--hatch{background-image:repeating-linear-gradient(45deg,currentColor 0 1px,transparent 1px var(--tex-pitch-hatch));opacity:var(--tex-normal)}
+.ef-tex--scan{background-image:repeating-linear-gradient(to bottom,currentColor 0 1px,transparent 1px 3px);opacity:var(--tex-quiet)}
+.ef-tex--rule{background-image:repeating-linear-gradient(to bottom,currentColor 0 1px,transparent 1px 28px);opacity:var(--tex-faint)}
+.ef-tex--loud{opacity:var(--tex-loud)}
+.ef-tex--faint{opacity:var(--tex-faint)}
+
+/* ---------- Corner brackets (角标) ---------- */
+.ef-brackets{position:absolute;inset:var(--bracket-inset);pointer-events:none;opacity:.55;
+  background:
+    linear-gradient(currentColor,currentColor) 0 0/var(--bracket-len) var(--bracket-weight) no-repeat,
+    linear-gradient(currentColor,currentColor) 0 0/var(--bracket-weight) var(--bracket-len) no-repeat,
+    linear-gradient(currentColor,currentColor) 100% 0/var(--bracket-len) var(--bracket-weight) no-repeat,
+    linear-gradient(currentColor,currentColor) 100% 0/var(--bracket-weight) var(--bracket-len) no-repeat,
+    linear-gradient(currentColor,currentColor) 0 100%/var(--bracket-len) var(--bracket-weight) no-repeat,
+    linear-gradient(currentColor,currentColor) 0 100%/var(--bracket-weight) var(--bracket-len) no-repeat,
+    linear-gradient(currentColor,currentColor) 100% 100%/var(--bracket-len) var(--bracket-weight) no-repeat,
+    linear-gradient(currentColor,currentColor) 100% 100%/var(--bracket-weight) var(--bracket-len) no-repeat}
+
+/* ---------- Hazard stripe (警示条) ---------- */
+.ef-hazard{height:var(--hazard-h);flex:none;background:repeating-linear-gradient(45deg,var(--signal-2) 0 var(--hazard-pitch),var(--ink-1) var(--hazard-pitch) calc(var(--hazard-pitch) * 2))}
+.ef-hazard--alarm{background:repeating-linear-gradient(45deg,var(--alarm) 0 var(--hazard-pitch),var(--ink-1) var(--hazard-pitch) calc(var(--hazard-pitch) * 2))}
+.ef-hazard--quiet{background:repeating-linear-gradient(45deg,var(--structure-2) 0 var(--hazard-pitch),transparent var(--hazard-pitch) calc(var(--hazard-pitch) * 2))}
+.ef-hazard--tall{height:calc(var(--hazard-h) * 2)}
+
+/* ---------- Ruler ticks (刻度) ---------- */
+.ef-ticks{height:9px;flex:none;background-image:repeating-linear-gradient(to right,currentColor 0 1px,transparent 1px 8px);background-position:0 100%;background-size:100% 5px;background-repeat:repeat-x;opacity:.38}
+.ef-ticks--vertical{width:9px;height:auto;align-self:stretch;background-image:repeating-linear-gradient(to bottom,currentColor 0 1px,transparent 1px 8px);background-size:5px 100%;background-repeat:repeat-y}
+
+/* ---------- Plate (图版) ---------- */
+.ef-plate{position:relative;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden;min-height:160px;padding:var(--space-6);background:var(--ink-1);color:var(--paper-2);clip-path:var(--clip-br-xl)}
+.ef-plate--paper{background:var(--paper-3);color:var(--ink-1)}
+.ef-plate--signal{background:var(--signal-2);color:var(--ink-1)}
+.ef-plate--sm{min-height:112px;padding:var(--space-5);clip-path:var(--clip-br-lg)}
+.ef-plate:has(> .ef-hazard){padding-bottom:calc(var(--space-6) + var(--hazard-h))}
+.ef-plate__media{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:var(--plate-filter)}
+.ef-plate__veil{position:absolute;inset:0;pointer-events:none;background:var(--plate-vignette)}
+.ef-plate__mark{position:absolute;right:-.05em;bottom:-.22em;max-width:100%;margin:0;overflow:hidden;font:var(--weight-black) var(--watermark-size)/.78 var(--font-display);letter-spacing:-.02em;text-transform:uppercase;opacity:var(--watermark-opacity);pointer-events:none;white-space:nowrap;user-select:none}
+.ef-plate--paper .ef-plate__mark,.ef-plate--signal .ef-plate__mark{opacity:var(--watermark-opacity-light)}
+.ef-plate--sm .ef-plate__mark{font-size:var(--watermark-size-sm)}
+.ef-plate__index{position:absolute;top:var(--space-5);left:var(--space-6);margin:0;font:var(--weight-black) var(--text-heading)/1 var(--font-display);letter-spacing:var(--tracking-display)}
+.ef-plate__meta{position:absolute;top:var(--space-5);right:var(--space-6);display:flex;flex-direction:column;gap:2px;align-items:flex-end;font:var(--weight-medium) var(--text-micro)/1.5 var(--font-mono);letter-spacing:var(--tracking-wide);opacity:.72}
+.ef-plate__body{position:relative;display:flex;flex-direction:column;gap:var(--space-3)}
+.ef-plate__title{margin:0;font:var(--weight-black) var(--text-title)/1.05 var(--font-display);letter-spacing:var(--tracking-display)}
+.ef-plate__caption{margin:0;max-width:52ch;font:var(--weight-regular) var(--text-body)/1.55 var(--font-ui);opacity:.78;text-wrap:pretty}
+.ef-plate__rail{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--signal-2)}
+.ef-plate--signal .ef-plate__rail,.ef-plate--paper .ef-plate__rail{background:var(--ink-1)}
+
+/* ---------- Art slot (素材位) — where real imagery goes ---------- */
+.ef-artslot{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--space-3);min-height:120px;padding:var(--space-6);color:var(--text-placeholder);background:var(--paper-3);box-shadow:inset 0 0 0 1px var(--structure-2);clip-path:var(--clip-br-lg);text-align:center}
+.ef-artslot__label{color:var(--text-placeholder);font:var(--weight-semibold) var(--text-label)/1 var(--font-ui);letter-spacing:var(--tracking-label);text-transform:uppercase}
+.ef-artslot__hint{color:var(--text-placeholder);font:var(--weight-regular) var(--text-micro)/1.5 var(--font-mono)}
+
+/* ---------- Backdrops (底板) — whole-surface grounds for app shells ---------- */
+.ef-bg{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.ef-bg--vault{background-image:linear-gradient(to right,currentColor 1px,transparent 1px),linear-gradient(to bottom,currentColor 1px,transparent 1px),linear-gradient(to right,currentColor 1px,transparent 1px),linear-gradient(to bottom,currentColor 1px,transparent 1px);background-size:var(--tex-pitch-plot) var(--tex-pitch-plot),var(--tex-pitch-plot) var(--tex-pitch-plot),var(--tex-pitch-fine) var(--tex-pitch-fine),var(--tex-pitch-fine) var(--tex-pitch-fine);opacity:var(--tex-quiet)}
+.ef-bg--iso{background-image:repeating-linear-gradient(30deg,currentColor 0 1px,transparent 1px 22px),repeating-linear-gradient(-30deg,currentColor 0 1px,transparent 1px 22px);opacity:var(--tex-faint)}
+.ef-bg--metal{background-image:radial-gradient(circle at 60% 60%,rgba(255,255,255,.55) 0 1px,transparent 1.4px),radial-gradient(circle at 40% 40%,currentColor 0 1px,transparent 1.4px);background-size:var(--tex-pitch-perf) var(--tex-pitch-perf);opacity:var(--tex-normal)}
+.ef-bg--sweep{background-image:repeating-linear-gradient(115deg,currentColor 0 2px,transparent 2px 14px,currentColor 14px 15px,transparent 15px 64px);opacity:var(--tex-faint)}
+.ef-bg--corner{background-image:repeating-linear-gradient(45deg,currentColor 0 1px,transparent 1px 8px);background-repeat:no-repeat;background-size:230px 230px;background-position:100% 0;opacity:var(--tex-quiet);-webkit-mask-image:linear-gradient(225deg,#000,transparent 62%);mask-image:linear-gradient(225deg,#000,transparent 62%)}
+.ef-bg__vignette{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 0%,transparent 40%,rgba(16,17,16,.30) 100%)}
+
+/* ---------- Data strips (数据条) ---------- */
+.ef-barcode{height:20px;flex:none;background-image:repeating-linear-gradient(90deg,currentColor 0 3px,transparent 3px 8px,currentColor 8px 10px,transparent 10px 19px,currentColor 19px 24px,transparent 24px 28px,currentColor 28px 29px,transparent 29px 36px,currentColor 36px 40px,transparent 40px 47px);opacity:.85}
+.ef-barcode--tall{height:34px}
+.ef-barcode--vertical{width:20px;height:auto;align-self:stretch;background-image:repeating-linear-gradient(180deg,currentColor 0 3px,transparent 3px 8px,currentColor 8px 10px,transparent 10px 19px,currentColor 19px 24px,transparent 24px 28px,currentColor 28px 29px,transparent 29px 36px,currentColor 36px 40px,transparent 40px 47px)}
+.ef-chevrons{height:16px;flex:none;background-image:linear-gradient(45deg,currentColor 25%,transparent 25%,transparent 75%,currentColor 75%);background-size:16px 16px;background-repeat:repeat-x;opacity:.55}
+
+/* ---------- Targeting frame (标定框) ---------- */
+.ef-frame{position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 0 1px currentColor;opacity:.4;
+  background:
+    linear-gradient(currentColor,currentColor) 50% 0/1px 8px no-repeat,
+    linear-gradient(currentColor,currentColor) 50% 100%/1px 8px no-repeat,
+    linear-gradient(currentColor,currentColor) 0 50%/8px 1px no-repeat,
+    linear-gradient(currentColor,currentColor) 100% 50%/8px 1px no-repeat}
+
+/* ---------- Diagonal slash block (斜切块) ---------- */
+.ef-slash{position:relative;display:flex;align-items:center;gap:var(--space-4);padding:var(--space-3) var(--space-7) var(--space-3) var(--space-5);background:var(--signal-2);color:var(--ink-1);clip-path:var(--clip-tag-lg);font:var(--weight-black) var(--text-label)/1 var(--font-display);letter-spacing:var(--tracking-label);text-transform:uppercase}
+.ef-slash--ink{background:var(--ink-1);color:var(--paper-2)}
+.ef-slash--alarm{background:var(--alarm);color:var(--paper-2)}

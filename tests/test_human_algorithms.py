@@ -12,6 +12,9 @@ import statistics
 import unittest
 
 from rhodes_fast.aim_algorithms import Observation, create_algorithm, dynamic_kp
+from rhodes_fast.algorithm_library import builtin_names
+from rhodes_fast.aim_algorithms.builtin import _landed_command
+from rhodes_fast.gui_core.state import algorithm_param_specs
 
 _FF = {"loop_delay_frames": 8.0, "gain": 1.0, "velocity_smoothing": 0.25}
 
@@ -642,3 +645,107 @@ class VelocityOutlierTests(unittest.TestCase):
             )
         plain_kp = dynamic_kp(error, 0.035, 0.125, 0.047)
         self.assertGreater(step_x, error * plain_kp * 1.05)
+
+
+class ZeroIsReachableTest(unittest.TestCase):
+    """每个旋钮都要能拧到 0。
+
+    拧不到的那几个原来是这样卡住的: loop_delay_frames 最小 1, velocity_smoothing
+    最小 0.01, wind_decay_px 最小 5, gravity / max_step / damp_px 各有自己的下限。
+    界面上的滑条按 Param 的 minimum 画, 用户拖到头也到不了 0, 手打一个 0 会被夹回去。
+
+    0 在这几个上都是有意义的设置 (不要前馈、不要末端阻尼、风不归零……), 而且都不会
+    把算法弄崩 —— 下面那条测试就是钉这个的。
+    """
+
+    ZERO_PARAMS = {
+        "feedforward": ("loop_delay_frames", "velocity_smoothing"),
+        "inflight": ("loop_delay_frames",),
+        "inflight_ff": ("loop_delay_frames", "velocity_smoothing"),
+        "feedforward_wind": ("loop_delay_frames", "velocity_smoothing", "wind_decay_px"),
+        "feedforward_bezier": ("loop_delay_frames", "velocity_smoothing"),
+        "windmouse": ("gravity", "max_step", "damp_px"),
+    }
+
+    def test_every_listed_parameter_can_be_set_to_zero(self) -> None:
+        for name, params in self.ZERO_PARAMS.items():
+            specs = {spec.name: spec for spec in algorithm_param_specs(name)}
+            for param in params:
+                with self.subTest(algorithm=name, param=param):
+                    self.assertEqual(specs[param].minimum, 0.0)
+
+    def test_no_builtin_parameter_is_fenced_off_from_zero(self) -> None:
+        """反过来再扫一遍。将来加参数时顺手写个非零下限的话, 这条会红 ——
+        而症状本来只是「这个旋钮拧不到底」, 没人会为它提 bug。
+
+        真的不能是 0 的参数就加进 allowed, 连同理由。
+        """
+        # 今天一个都没有。有除零风险的 —— 比如 examples/kalman_projectile.py 的
+        # camera_scale, 它在算式里当除数 —— 是用户自己装的算法, 不归这里管, 也
+        # 不该由这条测试去改别人文件里的下限。
+        allowed: dict[tuple[str, str], str] = {}
+        for name in builtin_names():
+            for spec in algorithm_param_specs(name):
+                if spec.minimum <= 0.0:
+                    continue
+                with self.subTest(algorithm=name, param=spec.name):
+                    self.assertIn((name, spec.name), allowed)
+
+    def test_every_algorithm_survives_all_of_its_minimums(self) -> None:
+        """「能填 0」不能变成「填 0 就崩」。
+
+        每个算法按它自己的最小值整套构造一遍, 跑一段真实的拉枪: 不许抛异常,
+        输出必须是有限数。除零和 NaN 都在这里拦 —— NaN 尤其阴, 它会一路流进
+        亚像素累加器, 之后这一局再也动不了, 而日志里一个字都没有。
+        """
+        errors = [(120.0 - index * 4.0, 40.0 - index * 1.5) for index in range(30)]
+        for name in builtin_names():
+            specs = algorithm_param_specs(name)
+            params = {spec.name: spec.minimum for spec in specs}
+            with self.subTest(algorithm=name, params=params):
+                steps = drive(create_algorithm(name, params), errors)
+                for step_x, step_y in steps:
+                    self.assertTrue(math.isfinite(step_x) and math.isfinite(step_y), params)
+
+    def test_every_algorithm_survives_all_of_its_maximums(self) -> None:
+        """顺手把另一头也扫了。上限这边原来没人验过, 而用户拖滑条是两头都拖的。"""
+        errors = [(120.0 - index * 4.0, 40.0 - index * 1.5) for index in range(30)]
+        for name in builtin_names():
+            specs = algorithm_param_specs(name)
+            params = {spec.name: spec.maximum for spec in specs}
+            with self.subTest(algorithm=name, params=params):
+                steps = drive(create_algorithm(name, params), errors)
+                for step_x, step_y in steps:
+                    self.assertTrue(math.isfinite(step_x) and math.isfinite(step_y), params)
+
+
+class ZeroLoopDelayTest(unittest.TestCase):
+    """回路延迟填 0 = 不要前馈。"""
+
+    def test_a_zero_lag_reads_no_landed_command(self) -> None:
+        """_landed_command 往回数第 lag 条。lag=0 时 commands[-0] 就是 commands[0],
+        也就是**最老**的那一条 —— Python 的 -0 等于 0。
+
+        原来的 max(1, ...) 把这个下标问题挡住了, 代价是 0 根本填不进来。现在
+        0 能填了, 这一支就得自己站得住: 没有延迟就没有「刚落地」的指令。
+        """
+        history = ((99, 99), (7, 7), (1, 1))
+        self.assertEqual(_landed_command(history, 0), (0.0, 0.0))
+        self.assertEqual(_landed_command(history, 1), (1.0, 1.0))
+
+    def test_zero_lag_turns_feedforward_into_plain_proportional(self) -> None:
+        """前馈量是 速度 x 延迟帧数, 延迟为 0 就没有前馈 —— 输出应该跟比例控制
+        逐位相同。差一点点的话, 说明 0 那一档其实被悄悄夹成了 1。"""
+        errors = [(100.0 - index * 3.0, 20.0) for index in range(20)]
+        lead = drive(create_algorithm("feedforward", dict(_FF, loop_delay_frames=0.0)), errors)
+        plain = drive(create_algorithm("p", {}), errors)
+        self.assertEqual(lead, plain)
+
+    def test_zero_lag_still_leaves_the_wind(self) -> None:
+        """「不要前馈, 只要风」是一种真实的配法 —— 别的算法给不了。整条被夹成
+        比例控制的话, 这个组合就没了。"""
+        errors = [(100.0 - index * 3.0, 20.0) for index in range(20)]
+        params = dict(_FF, loop_delay_frames=0.0, wind_strength=0.8, wind_decay_px=40.0, seed=7.0)
+        windy = drive(create_algorithm("feedforward_wind", params), errors)
+        plain = drive(create_algorithm("p", {}), errors)
+        self.assertNotEqual(windy, plain)

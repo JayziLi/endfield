@@ -259,6 +259,20 @@ class ConfigTests(unittest.TestCase):
                     loaded = load_config(path, validate_model=False)
                 self.assertEqual(loaded.ui.trail_seconds, 1.3)
 
+    def test_whether_the_log_is_folded_round_trips_through_both_formats(self) -> None:
+        """折叠运行日志是为了把高度让给预览画面。不记住的话, 每次打开都要再折一次
+        —— 而这正是用户要它能折的原因。"""
+        for source in (_TEXT_CONFIG, _TOML_CONFIG):
+            with self.subTest(source=source.name):
+                original = load_config(source, validate_model=False)
+                self.assertIs(original.ui.log_collapsed, False, "默认展开")
+                changed = replace(original, ui=replace(original.ui, log_collapsed=True))
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / source.name
+                    save_config(changed, path)
+                    loaded = load_config(path, validate_model=False)
+                self.assertIs(loaded.ui.log_collapsed, True)
+
     def test_the_trail_checkboxes_are_not_remembered(self) -> None:
         # 打开程序时总是只勾「画面」, 所以勾选状态不存。上一个版本存过这两个键,
         # 那样写出来的文件必须照常能读。
@@ -289,6 +303,60 @@ class ConfigTests(unittest.TestCase):
         # 升级前写出的配置文件里没有这两个键, 必须当成现状算法而不是报错。
         self.assertEqual(AimProfileConfig().algorithm, "p")
         self.assertEqual(AimProfileConfig().algorithm_params, {})
+
+
+class SinglePcSettingsTests(unittest.TestCase):
+    """单机模式加了两节: [desktop] 管本机屏幕采集, [mouse] 管移动由谁发。"""
+
+    def test_files_from_before_the_upgrade_keep_todays_behaviour(self) -> None:
+        """升级后打不开 settings.txt 是最糟的情况; 读得开但换了行为是第二糟 ——
+        老文件没有 [mouse], 读进来必须还是 KMBox。"""
+        for source in (_TEXT_CONFIG, _TOML_CONFIG):
+            with self.subTest(source=source.name):
+                loaded = load_config(source, validate_model=False)
+                self.assertEqual(loaded.mouse.output, "kmbox")
+                self.assertEqual(
+                    (loaded.desktop.backend, loaded.desktop.monitor, loaded.desktop.width, loaded.desktop.height),
+                    ("dxgi", 0, 320, 320),
+                )
+
+    def test_desktop_and_mouse_round_trip_through_both_formats(self) -> None:
+        for source in (_TEXT_CONFIG, _TOML_CONFIG):
+            with self.subTest(source=source.name):
+                original = load_config(source, validate_model=False)
+                changed = replace(
+                    original,
+                    input=replace(original.input, mode="desktop"),
+                    desktop=replace(original.desktop, backend="winrt", monitor=1, width=256, height=192),
+                    mouse=replace(original.mouse, output="sendinput"),
+                )
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / source.name
+                    save_config(changed, path)
+                    loaded = load_config(path, validate_model=False)
+                self.assertEqual(loaded.input.mode, "desktop")
+                self.assertEqual(loaded.desktop, changed.desktop)
+                self.assertEqual(loaded.mouse.output, "sendinput")
+
+    def test_sendinput_leaves_the_kmbox_switch_alone(self) -> None:
+        """两个设置互不干扰: kmbox.enabled 只管 KMBox, 选 SendInput 不去改它。"""
+        original = default_config()
+        self.assertIs(original.kmbox.enabled, False)
+        self.assertEqual(original.mouse.output, "kmbox")
+
+    def test_invalid_desktop_and_mouse_settings_are_rejected(self) -> None:
+        original = load_config(_TEXT_CONFIG, validate_model=False)
+        cases = {
+            "unknown backend": replace(original, desktop=replace(original.desktop, backend="gdi")),
+            "negative monitor": replace(original, desktop=replace(original.desktop, monitor=-1)),
+            "zero width": replace(original, desktop=replace(original.desktop, width=0)),
+            "negative height": replace(original, desktop=replace(original.desktop, height=-5)),
+            "unknown output": replace(original, mouse=replace(original.mouse, output="arduino")),
+        }
+        for label, invalid in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(ValueError):
+                    save_config(invalid, Path(directory) / "settings.txt")
 
 
 if __name__ == "__main__":
