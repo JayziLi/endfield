@@ -18,7 +18,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from ..config import AppConfig, load_config, save_config
+from ..config import AppConfig, default_config, load_config, save_config
 from ..gui_core.state import (
     algorithm_choices,
     apply_preset_to_state,
@@ -54,6 +54,13 @@ def _cache_file(config_path: Path, suffix: str) -> Path:
     一边的停止文件就成了另一边的停止文件, 谁按停止都是两个一起停。
     """
     return config_path.parent / ".cache" / f"webview-{os.getpid()}{suffix}"
+
+
+def _load_or_create_config(config_path: Path) -> AppConfig:
+    """Give the standalone WebView entry point the same first-run behavior as the CLI."""
+    if not config_path.is_file():
+        save_config(default_config(), config_path)
+    return load_config(config_path, validate_model=False)
 
 
 class Api:
@@ -1076,7 +1083,7 @@ def main() -> None:
     # validate_model=False: 模型文件不在也要把界面画出来 —— 那正是用户要
     # 进来改路径的时候。旧界面同样的做法。
     labels = default_labels()
-    config = load_config(config_path, validate_model=False)
+    config = _load_or_create_config(config_path)
     bridge = FormBridge(
         config_to_form_state(config, config_path.parent, labels, display_path=display_path)
     )

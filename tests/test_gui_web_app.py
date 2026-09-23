@@ -17,6 +17,18 @@ from unittest.mock import Mock
 from rhodes_fast.gui_core import session as gui_core_session
 
 
+class ConfigBootstrapTest(unittest.TestCase):
+    def test_standalone_entry_creates_settings_on_a_clean_checkout(self) -> None:
+        from rhodes_fast.gui_web.app import _load_or_create_config
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "settings.txt"
+            config = _load_or_create_config(path)
+
+            self.assertTrue(path.is_file())
+            self.assertEqual(config.udp.port, 4455)
+
+
 class ApiTest(unittest.TestCase):
     def test_window_controls_reach_the_window(self) -> None:
         """无边框窗口没有系统按钮, 这三个是唯一的出路 —— 接错了窗口就关不掉。"""
