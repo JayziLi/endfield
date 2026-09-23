@@ -5,9 +5,8 @@ HANDOFF 写着「the app is frameless Windows software, so it must own its own
 caption bar and footer」。代价是系统什么都不再给: 拖动、最小化、最大化、关闭
 全要自己接, 那就是下面 Api 那三个方法和 Task 7 的 CSS 要干的活。
 
-这个模块顶部没有 `import webview`, 那一行在 main() 里面。pywebview 是可选依赖
-(pyproject 的 webview extra), 在第三份计划把默认入口切过来之前, 旧界面不该被迫
-装它 —— 顶部 import 会让没装的检出连测试都跑不起来。
+这个模块顶部没有 `import webview`, 那一行在 main() 里面。这样纯推理入口和
+测试在导入模块时不需要立刻加载窗口运行时。
 """
 
 from __future__ import annotations
@@ -1029,7 +1028,7 @@ class Api:
             self._preview_enable_file.unlink(missing_ok=True)
 
 
-def main() -> None:
+def main(config_path: Path = Path("settings.txt")) -> None:
     import webview
 
     from ..gui_core.session import GuiSession
@@ -1076,7 +1075,7 @@ def main() -> None:
     # 配置路径照旧界面 (gui.py 的 main 传 Path("settings.txt"), RhodesFastGui
     # 再 resolve 一次): 工作目录下的 settings.txt, 绝对路径, 子进程的 cwd 就是
     # 它的父目录。
-    config_path = Path("settings.txt").resolve()
+    config_path = config_path.resolve()
     prompter = ModalPrompter(push=api._push_log)
     prompter.attach(window)
     session = GuiSession(config_path, prompter)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "endfield"
-version = "1.3.0"
+version = "1.3.1"
 description = "Low-latency secondary-PC YOLO inference with tunable motion control"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -16,6 +16,7 @@ dependencies = [
   "numpy>=1.26,<3",
   "opencv-python-headless>=4.10,<5",
   "pillow>=11,<13",
+  "pywebview>=5.0,<6",
   "tomli-w>=1.2,<2",
   "websocket-client>=1.8,<2",
 ]
@@ -29,11 +30,8 @@ nvidia = [
   "onnxruntime-gpu[cuda,cudnn]==1.26.0",
   "tensorrt-cu12==10.9.0.34",
 ]
-# 新的 WebView 界面 (endfield-gui-next)。故意留在可选依赖里: 默认入口还是旧的
-# tkinter 界面, 在它切过去之前, 只想跑推理的人不该被迫装一套 GUI 运行时。
-webview = [
-  "pywebview>=5.0,<6",
-]
+# 兼容 v1.3.0 的安装命令；WebView 已是默认界面的标准依赖。
+webview = []
 # 单机模式的本机屏幕采集 (DXGI 桌面复制 / WGC)。只用副机的人不需要。
 # 钉在 0.3.x: desktop_source.py 给这个版本打了一个双重释放的补丁, 换版本之前
 # 要先确认上游修没修。不要加 cv2 这个 extra —— 它会再装一份 opencv-python, 跟
@@ -53,8 +51,9 @@ Issues = "https://github.com/JayziLi/endfield/issues"
 
 [project.scripts]
 endfield = "rhodes_fast.__main__:main"
-endfield-gui = "rhodes_fast.gui:main"
+endfield-gui = "rhodes_fast.gui_web.app:main"
 endfield-gui-next = "rhodes_fast.gui_web.app:main"
+endfield-gui-classic = "rhodes_fast.gui:main"
 
 [tool.setuptools.packages.find]
 include = ["rhodes_fast*"]

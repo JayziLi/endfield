@@ -10,13 +10,19 @@ Endfield 是一套面向 Windows 的本地实时视觉检测与移动控制工�
 
 ![Endfield 控制面板](docs/endfield-control-panel.png)
 
+## v1.3.1 新界面现为默认
+
+双击 `start.bat` 会打开上图所示的新版控制面板。全新安装会自动安装界面依赖；从旧版本直接解压覆盖的用户首次启动时，也会补装缺少的依赖。`endfield-gui` 和 `python -m rhodes_fast --gui` 同样进入新版界面。
+
+如需使用原来的 tkinter 界面，运行 `.venv\Scripts\pythonw.exe -m rhodes_fast --gui-classic`，或使用 `endfield-gui-classic` 命令。旧配置和预设仍可继续使用。
+
 ## v1.3 新界面与单机模式
 
-新增基于 WebView2 的下一代桌面界面：运行设置、识别与控制、实时预览和算法库统一使用新的 Endfield 视觉系统；预设切换、动态参数、运行日志、系统状态灯、源码查看和放大预览均已接入真实后端。新版入口为 `endfield-gui-next`，当前仍与经典界面并存，默认 `start.bat` 暂时继续打开经典界面。安装与启动新版界面：
+新增基于 WebView2 的下一代桌面界面：运行设置、识别与控制、实时预览和算法库统一使用新的 Endfield 视觉系统；预设切换、动态参数、运行日志、系统状态灯、源码查看和放大预览均已接入真实后端。`endfield-gui-next` 保留为兼容入口；从 v1.3.1 起，新版界面就是默认界面。也可以手动启动：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[webview]"
-.\.venv\Scripts\pythonw.exe -m rhodes_fast.gui_web
+.\setup.bat auto
+.\.venv\Scripts\pythonw.exe -m rhodes_fast --gui
 ```
 
 同时新增单机模式：可以直接捕获本机屏幕中央区域，并通过 Windows `SendInput` 输出相对鼠标移动，不再强制要求副机或 KMBox。需要本机屏幕捕获时安装 `.[local]` 可选依赖；副机 UDP、OBS 和 KMBox 流程仍完整保留。
@@ -81,7 +87,7 @@ v1.1 把移动控制做成了可插拔算法。每套控制方案可以独立选
 4. 校验模型大小和 SHA-256 后再放入 `models/`；
 5. 创建你的本地 `settings.txt` 并打开控制面板。
 
-之后再次双击 `start.bat` 会直接启动，不会重复安装或下载。
+之后再次双击 `start.bat` 会直接打开新版界面，不会重复安装或下载。
 
 ### 方式二：Git 克隆
 
@@ -282,11 +288,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m build
 ```
 
-新的 WebView 界面还在开发中，入口是 `endfield-gui-next`，窗口运行时是可选依赖：
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install "pywebview>=5.0,<6"
-```
+默认界面使用 pywebview 和 Windows WebView2。`setup.bat` 会安装 pywebview；如果提示缺少 WebView2 运行时，请安装微软的 WebView2 Runtime 后重新启动。经典界面仍可用 `--gui-classic` 打开。
 
 已知限制：这个窗口是无边框的（标题栏由界面自己画），所以拿不到 Windows 的贴边分屏（Aero Snap）——把窗口拖到屏幕边缘不会自动半屏。要支持它得接管 Win32 的 `WM_NCHITTEST`，目前不做。同样的原因，最大化会铺满整块屏幕并盖住任务栏。
 
@@ -300,4 +302,4 @@ python -m venv .venv
 
 ## English quick start
 
-Endfield is a local Windows application for low-latency YOLO inference and tunable motion control. v1.3 adds a next-generation WebView2 interface plus local-screen capture and Windows SendInput output, while retaining the secondary-PC UDP/OBS and KMBox workflows. Install Python 3.11–3.13, download the latest Windows ZIP from Releases, and double-click `start.bat` for the classic interface. To try the new interface, install the `webview` extra and run `pythonw -m rhodes_fast.gui_web`; install the `local` extra for local-screen capture. Personal settings, model weights, imported algorithms, and generated engine caches are never tracked by Git.
+Endfield is a local Windows application for low-latency YOLO inference and tunable motion control. It supports the low-latency secondary-PC UDP/OBS and KMBox workflows, plus local-screen capture and Windows SendInput output. Install Python 3.11–3.13, download the latest Windows ZIP from Releases, and double-click `start.bat` to open the new WebView2 interface. The classic interface remains available with `pythonw -m rhodes_fast --gui-classic`; install the `local` extra for local-screen capture. Personal settings, model weights, imported algorithms, and generated engine caches are never tracked by Git.

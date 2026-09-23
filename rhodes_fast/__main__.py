@@ -40,6 +40,7 @@ def main() -> None:
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--gui", action="store_true", help="open the graphical control panel")
+    mode.add_argument("--gui-classic", action="store_true", help="open the classic control panel")
     mode.add_argument(
         "--download-model",
         action="store_true",
@@ -61,6 +62,8 @@ def main() -> None:
         help="benchmark the live input-to-target pipeline for N frames",
     )
     args = parser.parse_args()
+    if args.gui and args.autostart:
+        parser.error("--autostart is supported by --gui-classic only")
 
     config = None
     try:
@@ -78,6 +81,11 @@ def main() -> None:
             print(f"Model ready: {model_path}")
             return
         if args.gui:
+            from .gui_web.app import main as run_gui
+
+            run_gui(args.config)
+            return
+        if args.gui_classic:
             from .gui import run_gui
 
             run_gui(args.config, auto_start=args.autostart)
@@ -112,7 +120,7 @@ def main() -> None:
                 trail_settings_file=args.trail_settings_file,
             )
     except Exception as exc:
-        if args.gui:
+        if args.gui or args.gui_classic:
             try:
                 import tkinter as tk
                 from tkinter import messagebox
